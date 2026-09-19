@@ -1,5 +1,6 @@
 --- LibForever-1.0
--- Shared plumbing for the WoW: Forever addons (Guildhall, Campfire, ForeverStats).
+-- Shared plumbing for the YippYapp addons for WoW: Forever (Guildhall, AutoFeed, Skillwright, BuffWarden,
+-- Campfire).
 -- Embedded in each addon: whichever copy is newest wins, and all of them then share one instance,
 -- so two of our addons loaded together can read each other's live data without any saved-variable tricks.
 --
@@ -10,12 +11,16 @@
 --   map        where am I, and how far away is that in yards (map sizes from the client's own data)
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations
-local MAJOR, MINOR = "LibForever-1.0", 1
+local MAJOR, MINOR = "LibForever-1.0", 2
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
 LIB.callbacks = LIB.callbacks or {}
 LIB.frames = LIB.frames or {}
+-- A newer copy of this file runs over an older one: all state lives on LIB, and the event handlers
+-- below are registered only once (they call through LIB, so they use the newest code).
+local firstLoad = not LIB.coreHooked
+LIB.coreHooked = true
 
 -- ---------------------------------------------------------------------------
 -- Events and callbacks
@@ -60,7 +65,8 @@ function LIB.Debug(fmt, ...)
     print("|cff88aaffLibForever|r: " .. (select("#", ...) > 0 and fmt:format(...) or fmt))
 end
 
-local debounces = {}
+local debounces = LIB.debounces or {}
+LIB.debounces = debounces
 function LIB.Debounce(key, delay, fn)
     if debounces[key] then debounces[key]:Cancel() end
     debounces[key] = C_Timer.NewTimer(delay, function()
@@ -125,10 +131,10 @@ function LIB.GuildKey()
     return name .. "-" .. (realm or LIB.Realm())
 end
 
-function LIB.RequestRoster()
-    if not IsInGuild() then return end
-    if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
-end
+-- Kept for old callers, but does nothing: C_GuildInfo.GuildRoster() pops Forever's "blocked from an
+-- action only available to the Blizzard UI" dialog, even inside pcall. The roster comes from the
+-- GUILD_ROSTER_UPDATE events the server sends by itself.
+function LIB.RequestRoster() end
 
 function LIB.IsOnline(full)
     if full == LIB.Me() then return true end
@@ -140,7 +146,8 @@ function LIB.IsGuildie(full)
     return LIB.roster[full] ~= nil
 end
 
-local function RebuildRoster()
+function LIB.RebuildRoster()
+    if not IsInGuild() then return end
     local total = GetNumGuildMembers()
     if not total or total == 0 then return end
     local old, new, cameOnline = LIB.roster, {}, {}
@@ -159,17 +166,16 @@ local function RebuildRoster()
     for _, full in ipairs(cameOnline) do LIB.Fire("MEMBER_ONLINE", full) end
 end
 
-LIB.On("GUILD_ROSTER_UPDATE", function() LIB.Debounce("roster", 1, RebuildRoster) end)
-LIB.On("PLAYER_GUILD_UPDATE", function()
-    LIB.RequestRoster()
-    LIB.Fire("GUILD_CHANGED")
-end)
+if firstLoad then
+    LIB.On("GUILD_ROSTER_UPDATE", function() LIB.Debounce("roster", 1, LIB.RebuildRoster) end)
+    LIB.On("PLAYER_GUILD_UPDATE", function() LIB.Fire("GUILD_CHANGED") end)
+end
 
 -- ---------------------------------------------------------------------------
 -- Comms: one registered prefix per addon, queued while chat is locked down
 -- ---------------------------------------------------------------------------
 LIB.comms = LIB.comms or {}
-local held = {}
+LIB.commHeld = LIB.commHeld or {}
 
 function LIB.InChatLockdown()
     return (C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()) or false
@@ -201,6 +207,7 @@ function LIB.Send(prefix, text, dist, target, prio)
     if not holder or not IsInGuild() then return end
     prio = prio or "NORMAL"
     if LIB.InChatLockdown() then
+        local held = LIB.commHeld
         if #held < 60 then held[#held + 1] = { prefix = prefix, text = text, dist = dist, target = target, prio = prio } end
         return false
     end
@@ -208,15 +215,16 @@ function LIB.Send(prefix, text, dist, target, prio)
     return true
 end
 
-C_Timer.NewTicker(10, function()
-    if LIB.InChatLockdown() or #held == 0 then return end
-    local queue = held
-    held = {}
+function LIB.FlushHeld()
+    if LIB.InChatLockdown() or #LIB.commHeld == 0 then return end
+    local queue = LIB.commHeld
+    LIB.commHeld = {}
     for _, m in ipairs(queue) do
         local holder = LIB.comms[m.prefix]
         if holder then holder:SendCommMessage(m.prefix, m.text, m.dist, m.target, m.prio) end
     end
-end)
+end
+if firstLoad then C_Timer.NewTicker(10, function() LIB.FlushHeld() end) end
 
 -- ---------------------------------------------------------------------------
 -- Map maths: normalised map coordinates in, yards out (sizes in Maps.lua)
@@ -254,10 +262,12 @@ function LIB.Distance(mapA, xA, yA, mapB, xB, yB)
         return math.sqrt(dx * dx + dy * dy)
     end
     -- Different maps: compare in world coordinates when both sit on the same parent continent.
+    -- Maps.lua rows are { width, height, top (world X), left (world Y), parent }: going down the map
+    -- (map y) walks world X over the height, going right (map x) walks world Y over the width.
     local a, b = sizes[mapA], sizes[mapB]
     if not a or not b or a[5] == 0 or a[5] ~= b[5] then return nil end
-    local ax, ay = a[3] - yA * a[1], a[4] - xA * a[2]
-    local bx, by = b[3] - yB * b[1], b[4] - xB * b[2]
+    local ax, ay = a[3] - yA * a[2], a[4] - xA * a[1]
+    local bx, by = b[3] - yB * b[2], b[4] - xB * b[1]
     local dx, dy = ax - bx, ay - by
     return math.sqrt(dx * dx + dy * dy)
 end
@@ -306,9 +316,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Startup
 -- ---------------------------------------------------------------------------
-LIB.On("PLAYER_LOGIN", function()
-    LIB.Me()
-    LIB.RequestRoster()
-    C_Timer.NewTicker(60, LIB.RequestRoster)
-    LIB.Fire("LOGIN")
-end)
+if firstLoad then
+    LIB.On("PLAYER_LOGIN", function()
+        LIB.Me()
+        -- Whatever roster the client already holds; GUILD_ROSTER_UPDATE keeps it fresh from here.
+        C_Timer.After(3, function() LIB.RebuildRoster() end)
+        LIB.Fire("LOGIN")
+    end)
+end

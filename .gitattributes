@@ -1,0 +1,2 @@
+# Images are binary: never convert line endings in them.
+*.tga binary

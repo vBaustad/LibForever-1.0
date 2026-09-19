@@ -5,18 +5,30 @@
 -- Drag slides it along its screen edge; it never leaves the edges. Right-click the bar for its options.
 --
 --   LIB.RegisterLauncher({ id, label, icon, onClick(button), status(), tooltip = {...}, order }, savedTable)
---   LIB.SetLauncherBadge(id, count)       LIB.SetLauncherHidden(id, hidden)   LIB.IsLauncherHidden(id)
---   LIB.LauncherOptions(parent, id) -> frame for an addon's settings page (show-icon toggle + bar style)
+--   LIB.SetLauncherHidden(id, hidden)     LIB.IsLauncherHidden(id)
+--   LIB.LauncherOptions(parent, id) -> 300x60 block for an addon's settings page: a line and a
+--       "YippYapp settings..." button; the shared settings themselves are on the YippYapp page
+--   LIB.GetLauncherStyle() / SetLauncherStyle("grow" | "collapse")   LIB.ResetLauncherPosition()
+--   LIB.SetLauncherEnabled(on)  LIB.IsLauncherEnabled()  the whole bar; OFF by default for new players
+--       (someone who already moved it or changed its style before this default keeps it on)
+--   LIB.SetLauncherBadge(id, count) is kept for old callers but does nothing: the bar is just buttons,
+--   never badges, dots or other notifications.
 --
 -- The lib has no SavedVariables of its own. Bar-wide settings (position, style) are written into every
 -- registered addon's saved table and the newest copy wins; an addon's own icon toggle lives only in
 -- that addon's table (savedTable.notchHidden[id]). With no icons shown the bar hides completely.
+local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 4
+local VERSION = 13
 if (LIB.launcherVersion or 0) >= VERSION then return end
 LIB.launcherVersion = VERSION
+
+-- The lib's own files (the launcher preview), inside whichever addon this copy was loaded from.
+if type(ADDON) == "string" then
+    LIB.mediaPath = LIB.mediaPath or ("Interface\\AddOns\\" .. ADDON .. "\\Libs\\LibForever-1.0\\Media\\")
+end
 
 -- Designed at full size, then the whole bar is scaled down: the bronze corners are 32px and need the room.
 local SCALE = 0.62
@@ -69,6 +81,17 @@ local function SetPref(key, value)
     end
 end
 
+-- The bar is off until the player turns it on. Before it could be turned off it was always shown,
+-- so a player who already moved it or changed its style chose it: keep it on for them.
+function LIB.IsLauncherEnabled()
+    local v = Pref("enabled", nil)
+    if v ~= nil then return v and true or false end
+    for _, db in ipairs(stores) do
+        if db.notch or (db.notchPrefs and db.notchPrefs.style) then return true end
+    end
+    return false
+end
+
 local function Collapsed()
     return Pref("style", "grow") == "collapse" and not expanded and not dragPos
 end
@@ -96,7 +119,7 @@ local TUCKED = { TOP = { TL = true, TR = true }, BOTTOM = { BL = true, BR = true
 local function Layout()
     if not notch then return end
     local list = Sorted()
-    notch:SetShown(#list > 0)
+    notch:SetShown(#list > 0 and LIB.IsLauncherEnabled())
     local collapsed = Collapsed()
     local width = collapsed and (PAD_X * 2 + COLLAPSED_W)
         or (PAD_X * 2 + #list * ICON + math.max(0, #list - 1) * GAP)
@@ -104,18 +127,15 @@ local function Layout()
     local pos = Position()
     local edge = SHIFT[pos.edge] and pos.edge or "TOP"
     local dx, dy = SHIFT[edge][1], SHIFT[edge][2]
-    local badges = false
     for _, e in pairs(entries) do e.button:Hide() end
     for i, e in ipairs(list) do
         e.button:ClearAllPoints()
         e.button:SetPoint("LEFT", notch, "LEFT", PAD_X + (i - 1) * (ICON + GAP) + dx, dy)
         e.button:SetShown(not collapsed)
-        if e.button.badge:IsShown() then badges = true end
     end
     notch.handle:ClearAllPoints()
     notch.handle:SetPoint("CENTER", notch, "CENTER", dx, dy)
     notch.handle:SetShown(collapsed)
-    notch.handle.alert:SetShown(collapsed and badges)
     for c, t in pairs(notch.brackets or {}) do t:SetShown(not TUCKED[edge][c]) end
 
     -- Keep the whole bar on screen along its edge.
@@ -163,7 +183,7 @@ local function DragUpdate()
 end
 
 local function StartDrag()
-    if dragPos or InCombatLockdown() then return end
+    if dragPos then return end  -- plain frames only, so it moves in combat too
     local p = Position()
     dragPos = { edge = p.edge, offset = p.offset or 0.5 }
     GameTooltip:Hide()
@@ -219,16 +239,24 @@ local function ResetPosition()
     Layout()
 end
 
+function LIB.SetLauncherEnabled(on)
+    SetPref("enabled", on and true or false)
+    expanded = nil
+    if notch then notch:SetScript("OnUpdate", nil) end
+    Layout()
+end
+
 local function ShowMenu()
     if not (MenuUtil and MenuUtil.CreateContextMenu) then return end
     MenuUtil.CreateContextMenu(notch, function(_, root)
-        root:CreateTitle("Forever launcher")
+        root:CreateTitle("YippYapp launcher")
         root:CreateRadio("Always open", function() return Pref("style", "grow") ~= "collapse" end,
             function() SetStyle("grow") end)
         root:CreateRadio("Collapse until hovered", function() return Pref("style", "grow") == "collapse" end,
             function() SetStyle("collapse") end)
         root:CreateDivider()
         root:CreateButton("Reset position", ResetPosition)
+        root:CreateButton("Turn the launcher off", function() LIB.SetLauncherEnabled(false) end)
     end)
 end
 
@@ -258,6 +286,7 @@ local function BuildNotch()
     if notch then return end
     notch = CreateFrame("Frame", "LibForeverNotch", UIParent)
     LIB.notchFrame = notch
+    notch.libVersion = VERSION
     notch:SetScale(SCALE)
     notch:SetFrameStrata("MEDIUM")
     notch:EnableMouse(true)
@@ -269,7 +298,7 @@ local function BuildNotch()
     notch:SetScript("OnEnter", Expand)
     notch:SetScript("OnMouseUp", function(_, mouse) if mouse == "RightButton" then ShowMenu() end end)
 
-    -- Collapsed look: three small dots, plus a red one when any addon has a badge up.
+    -- Collapsed look: three small dots.
     local handle = CreateFrame("Frame", nil, notch)
     handle:SetSize(COLLAPSED_W, 8)
     for i = 1, 3 do
@@ -279,12 +308,6 @@ local function BuildNotch()
         d:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
         d:SetVertexColor(0.92, 0.88, 0.80, 0.9)
     end
-    local alert = handle:CreateTexture(nil, "OVERLAY", nil, 1)
-    alert:SetSize(10, 10)
-    alert:SetPoint("CENTER", 14, 8)
-    alert:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-    alert:SetVertexColor(0.72, 0.10, 0.06)
-    handle.alert = alert
     notch.handle = handle
 end
 
@@ -299,22 +322,15 @@ local function MakeButton(e)
     icon:SetVertexColor(0.92, 0.88, 0.80, 0.92)
     b.icon = icon
 
-    local badge = CreateFrame("Frame", nil, b)
-    badge:SetSize(20, 20)
-    badge:SetPoint("TOPRIGHT", 8, 8)
-    badge:SetFrameLevel(b:GetFrameLevel() + 3)
-    local dot = badge:CreateTexture(nil, "ARTWORK")
-    dot:SetAllPoints()
-    dot:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-    dot:SetVertexColor(0.72, 0.10, 0.06)
-    badge.text = badge:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    badge.text:SetPoint("CENTER", 0, 0)
-    badge:Hide()
-    b.badge = badge
-
-    b:SetScript("OnClick", function(_, mouse) if e.onClick then e.onClick(mouse) end end)
+    -- The button outlives re-registration under the same id: always use the current entry.
+    local id = e.id
+    b:SetScript("OnClick", function(_, mouse)
+        local cur = entries[id] or e
+        if cur.onClick then cur.onClick(mouse) end
+    end)
     b:SetScript("OnEnter", function(self)
         if dragPos then return end
+        local e = entries[id] or e
         Expand()
         self.icon:SetVertexColor(1, 0.82, 0.40, 1)
         GameTooltip:SetOwner(self, "ANCHOR_NONE")
@@ -339,15 +355,56 @@ local function MakeButton(e)
     return b
 end
 
+-- A store joining (or rejoining) gets the bar-wide state every other store already agrees on:
+-- the newest position and the newest value of each preference. Without this an addon registered
+-- after a choice was made kept no copy of it, and the choice depended on which addons were loaded.
+local function SyncStore(db)
+    local pos = db.notch
+    for _, other in ipairs(stores) do
+        local p = other.notch
+        if p and p.v == 2 and (not pos or (p.t or 0) > (pos.t or 0)) then pos = p end
+    end
+    db.notch = pos
+    for _, other in ipairs(stores) do
+        for key, p in pairs(other.notchPrefs or {}) do
+            local mine = db.notchPrefs and db.notchPrefs[key]
+            if type(p) == "table" and (type(mine) ~= "table" or (p.t or 0) > (mine.t or 0)) then
+                db.notchPrefs = db.notchPrefs or {}
+                db.notchPrefs[key] = p
+            end
+        end
+    end
+end
+
+-- Before the on/off switch existed the bar was always on. Once every addon has registered, turn the
+-- guess (IsLauncherEnabled's fallback) into a stored choice, so the switch always shows a saved value
+-- and nothing flips it later depending on which addons happen to be loaded.
+local function SettleEnabled()
+    if Pref("enabled", nil) == nil and #stores > 0 then SetPref("enabled", LIB.IsLauncherEnabled()) end
+end
+
 function LIB.RegisterLauncher(entry, savedTable)
     if not entry or not entry.id then return end
     BuildNotch()
+    local old = entries[entry.id]
+    -- Re-registered with a different table (the addon's saved table was replaced): drop the old one
+    -- so nothing more is written into a table that is no longer saved.
+    if old and old.store and old.store ~= savedTable then
+        for i = #stores, 1, -1 do if stores[i] == old.store then tremove(stores, i) end end
+    end
     if savedTable then
         local known = false
         for _, db in ipairs(stores) do if db == savedTable then known = true end end
-        if not known then stores[#stores + 1] = savedTable end
+        if not known then
+            SyncStore(savedTable)
+            stores[#stores + 1] = savedTable
+        end
     end
-    local old = entries[entry.id]
+    LIB.Debounce("launcherSettle", 3, SettleEnabled)
+    -- For support diagnostics: who registered this id, and how often.
+    entry.registerCount = (old and old.registerCount or 0) + 1
+    entry.registeredFrom = debugstack and debugstack(2, 1, 0) or "?"
+    entry.loadedHidden = savedTable and savedTable.notchHidden and savedTable.notchHidden[entry.id]
     entry.store = savedTable
     if savedTable and savedTable.notchHidden and savedTable.notchHidden[entry.id] then entry.hidden = true end
     entry.button = old and old.button or MakeButton(entry)
@@ -356,16 +413,33 @@ function LIB.RegisterLauncher(entry, savedTable)
     Layout()
 end
 
-function LIB.SetLauncherBadge(id, count)
-    local e = entries[id]
-    if not e or not e.button then return end
-    count = tonumber(count) or 0
-    e.button.badge:SetShown(count > 0)
-    e.button.badge.text:SetText(count > 9 and "9+" or tostring(count))
-    Layout()
+-- Kept so older callers don't break; the bar shows no badges.
+function LIB.SetLauncherBadge() end
+
+-- Support diagnostics (a hidden command): the saved value as WoW loaded it (ADDON_LOADED) and at PLAYER_LOGIN, and every
+-- SetLauncherHidden call with its caller, so a value that goes missing shows where it went.
+local trace = LIB.launcherTrace or { loaded = {}, login = {}, calls = {} }
+LIB.launcherTrace = trace
+local function SavedHidden(name)
+    local db = rawget(_G, name .. "DB")
+    if type(db) ~= "table" then return "DB missing" end
+    if type(db.notchHidden) ~= "table" then return "no notchHidden table" end
+    return "value=" .. tostring(db.notchHidden[name])
 end
+-- Every addon is noted, so a missing saved table reads "DB missing" instead of looking like no value.
+LIB.On("ADDON_LOADED", function(name)
+    if type(name) == "string" then trace.loaded[name] = SavedHidden(name) end
+end)
+LIB.On("PLAYER_LOGIN", function()
+    for name in pairs(trace.loaded) do trace.login[name] = SavedHidden(name) end
+end)
 
 function LIB.SetLauncherHidden(id, hidden)
+    local list = trace.calls[id] or {}
+    trace.calls[id] = list
+    list[#list + 1] = ("%s at %.1fs from %s"):format(tostring(hidden and true or nil), GetTime and GetTime() or 0,
+        (debugstack and debugstack(2, 2, 0) or "?"):gsub("\n", " | "))
+    if #list > 4 then tremove(list, 1) end
     local e = entries[id]
     if not e then return end
     e.hidden = hidden and true or nil
@@ -376,58 +450,65 @@ function LIB.SetLauncherHidden(id, hidden)
     Layout()
 end
 
+-- Support diagnostics (a hidden command): what the launcher holds for each addon, and whether its table is the one WoW saves.
+function LIB.DebugLauncher()
+    local function out(fmt, ...) print("|cffffd100YippYapp|r " .. fmt:format(...)) end
+    out("launcher v%d, enabled=%s, %d saved tables", VERSION, tostring(LIB.IsLauncherEnabled()), #stores)
+    for id, e in pairs(entries) do
+        local store = e.store
+        local saved = rawget(_G, id .. "DB")
+        out("%s: hidden=%s, stored notchHidden=%s, table is %sDB: %s, registered %dx from %s", id,
+            tostring(e.hidden), tostring(store and store.notchHidden and store.notchHidden[id]),
+            id, tostring(store ~= nil and store == saved), e.registerCount or 0,
+            tostring(e.registeredFrom):gsub("%s+$", ""))
+        if saved and store ~= saved then
+            out("  %sDB.notchHidden[%s] = %s", id, id, tostring(saved.notchHidden and saved.notchHidden[id]))
+        end
+        out("  saved value: at ADDON_LOADED=%s, at PLAYER_LOGIN=%s, when registered=%s",
+            trace.loaded[id] or "not seen (loaded before this copy of the lib)", trace.login[id] or "not seen",
+            "value=" .. tostring(e.loadedHidden))
+        for _, c in ipairs(trace.calls[id] or {}) do out("  SetLauncherHidden(%s)", c) end
+    end
+end
+
 function LIB.IsLauncherHidden(id)
     local e = entries[id]
     return e and e.hidden or false
 end
 
--- Settings block for an addon's options page: its own show-icon toggle plus the bar-wide style.
--- Returns a 300x100 frame; it reads the current values whenever it is shown.
+LIB.launcherPreviewText = "The YippYapp launcher: a small bar at the edge of the screen with a button for each YippYapp addon."
+
+-- For the shared YippYapp settings page (Settings.lua).
+function LIB.GetLauncherStyle() return Pref("style", "grow") end
+function LIB.SetLauncherStyle(style) SetStyle(style == "collapse" and "collapse" or "grow") end
+LIB.ResetLauncherPosition = ResetPosition
+
+-- Block for an addon's own settings page. Everything shared (minimap grouping, the launcher, each
+-- addon's minimap and launcher buttons) lives on the one YippYapp settings page; this is the way there.
+-- Returns a 300x60 frame (it was 300x100 before the YippYapp page existed).
 function LIB.LauncherOptions(parent, id)
     local f = CreateFrame("Frame", nil, parent)
-    f:SetSize(300, 100)
-    local function check(label, y)
-        local cb = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
-        cb:SetSize(26, 26)
-        cb:SetPoint("TOPLEFT", 0, y)
-        local l = f:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-        l:SetPoint("LEFT", cb, "RIGHT", 4, 0)
-        l:SetText(label)
-        cb.label = l
-        return cb
-    end
-    local e = entries[id]
-    local show = check(("Show %s on the Forever launcher"):format(e and e.label or id), 0)
-    show:SetScript("OnClick", function(self) LIB.SetLauncherHidden(id, not self:GetChecked()) end)
-
-    local note = f:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    note:SetPoint("TOPLEFT", 4, -32)
-    note:SetText("Launcher bar (shared by all Forever addons):")
-    local open = check("Always open", -46)
-    local collapse = check("Collapse until hovered", -72)
-    open:SetScript("OnClick", function() SetStyle("grow"); f:Refresh() end)
-    collapse:SetScript("OnClick", function() SetStyle("collapse"); f:Refresh() end)
-
-    local reset = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    reset:SetSize(120, 22)
-    reset:SetPoint("LEFT", open.label, "RIGHT", 24, 0)
-    reset:SetText("Reset position")
-    reset:SetScript("OnClick", ResetPosition)
-
-    function f:Refresh()
-        show:SetChecked(not LIB.IsLauncherHidden(id))
-        local c = Pref("style", "grow") == "collapse"
-        open:SetChecked(not c)
-        collapse:SetChecked(c)
-    end
-    f:SetScript("OnShow", f.Refresh)
-    f:Refresh()
+    f:SetSize(300, 60)
+    local text = f:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    text:SetPoint("TOPLEFT", 4, -2)
+    text:SetWidth(292)
+    text:SetJustifyH("LEFT")
+    text:SetText("Minimap, launcher and other settings shared by the YippYapp addons")
+    local open = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    open:SetSize(160, 22)
+    open:SetPoint("TOPLEFT", 0, -26)
+    open:SetText("YippYapp settings...")
+    open:SetScript("OnClick", function()
+        if LIB.OpenYippYappSettings then LIB.OpenYippYappSettings() end
+    end)
+    open:SetEnabled(LIB.OpenYippYappSettings ~= nil)
+    f.button = open
     return f
 end
 
 -- An addon with an older copy of this file loaded first and already built the bar: retire that
 -- frame (its scripts point at the old code) and rebuild the bar and buttons with this version.
-if notch and not notch.handle then
+if notch and (notch.libVersion or 0) < VERSION then
     local old = notch
     old:SetScript("OnUpdate", nil)
     old:Hide()
