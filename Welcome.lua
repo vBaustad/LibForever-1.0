@@ -29,7 +29,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 6
+local VERSION = 8
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -169,26 +169,20 @@ local function SetIcon(tex, p)
     tex:SetVertexColor(0.92, 0.88, 0.80, 0.92)
 end
 
+local TAB_H, TAB_GAP, TAB_ICON = 37, 5, 16
+local TAB_PAD = 20   -- on each side of the icon and label; squeezed when many tabs must fit
+
 local function MakeTab(parent)
     local b = CreateFrame("Button", nil, parent, "MinimalTabTemplate")
-    b:SetHeight(37)
-    local dot = b:CreateTexture(nil, "OVERLAY")
-    dot:SetSize(8, 8)
-    dot:SetPoint("TOPRIGHT", -8, -8)
-    dot:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask")
-    dot:SetVertexColor(1, 0.78, 0.25)
-    b.newDot = dot
-    -- The addon's line icon in front of the label, tinted like on the launcher.
+    b:SetHeight(TAB_H)
+    -- The label sits in the middle of the tab, with the addon's line icon in front of it.
+    b.Text:ClearAllPoints()
+    b.Text:SetPoint("CENTER", b, "CENTER", (TAB_ICON + TAB_GAP) / 2, 0)
     local icon = b:CreateTexture(nil, "OVERLAY")
-    icon:SetSize(16, 16)
-    icon:SetPoint("RIGHT", b.Text, "LEFT", -5, 0)
+    icon:SetSize(TAB_ICON, TAB_ICON)
+    icon:SetPoint("RIGHT", b.Text, "LEFT", -TAB_GAP, 0)
     icon:SetVertexColor(0.92, 0.88, 0.80, 0.92)
     b.icon = icon
-    local point, rel, relPoint, x, y = b.Text:GetPoint(1)
-    if point then
-        b.Text:ClearAllPoints()
-        b.Text:SetPoint(point, rel, relPoint, (x or 0) + 10, y or 0)
-    end
     b:SetScript("OnClick", function(self) Select(self.id) end)
     return b
 end
@@ -294,7 +288,6 @@ function Select(id)
     for _, b in ipairs(win.tabs) do
         if b:IsShown() then
             b:SetSelected(b.id == id)
-            b.newDot:SetShown(b.id ~= id and not viewed[b.id] and Unseen(pages[b.id]))
         end
     end
     for _, q in pairs(pages) do if q.page then q.page:Hide() end end
@@ -338,17 +331,26 @@ local function Show(list, selectId)
     if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText(title) end
 
     for _, b in ipairs(win.tabs) do b:Hide() end
+    -- The row starts at the same left margin as the page below it, and is squeezed to fit the window.
+    local labels, textWidth = {}, 0
+    for i, p in ipairs(list) do
+        local b = win.tabs[i] or MakeTab(win)
+        win.tabs[i] = b
+        b.Text:SetText(p.title or p.id)
+        labels[i] = b.Text:GetStringWidth()
+        textWidth = textWidth + labels[i]
+    end
+    local room = W - 24 - 20 - (#list - 1) * TAB_GAP - #list * (TAB_ICON + TAB_GAP)
+    local pad = math.max(8, math.min(TAB_PAD, math.floor((room - textWidth) / (2 * #list))))
     local prev
     for i, p in ipairs(list) do
         shown[i] = p.id
-        local b = win.tabs[i] or MakeTab(win)
-        win.tabs[i] = b
+        local b = win.tabs[i]
         b.id = p.id
-        b.Text:SetText(p.title or p.id)
         SetIcon(b.icon, p)
-        b:SetWidth(b.Text:GetStringWidth() + 60)
+        b:SetWidth(labels[i] + TAB_ICON + TAB_GAP + pad * 2)
         b:ClearAllPoints()
-        if prev then b:SetPoint("TOPLEFT", prev, "TOPRIGHT", 5, 0) else b:SetPoint("TOPLEFT", 32, -27) end
+        if prev then b:SetPoint("TOPLEFT", prev, "TOPRIGHT", TAB_GAP, 0) else b:SetPoint("TOPLEFT", 24, -27) end
         b:SetShown(not single)
         prev = b
     end
@@ -447,6 +449,7 @@ SlashCmdList.YIPPYAPP = function(msg)
     -- Support-only: the launcher's state per addon, for bug reports.
     if msg and msg:lower():match("^%s*debug") then
         if LIB.DebugLauncher then LIB.DebugLauncher() end
+        if LIB.DebugMinimap then LIB.DebugMinimap() end
         return
     end
     -- "/yippyapp settings": the shared YippYapp settings page.

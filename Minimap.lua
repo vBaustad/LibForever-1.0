@@ -25,7 +25,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 3
+local VERSION = 4
 if (LIB.minimapVersion or 0) >= VERSION then return end
 LIB.minimapVersion = VERSION
 
@@ -45,7 +45,7 @@ end
 
 local buttons = LIB.minimapButtons or {}  -- [id] = { store, object, opts, order }
 LIB.minimapButtons = buttons
-local shared = LIB.minimapShared or { fresh = true, data = {} }
+local shared = LIB.minimapShared or { data = {} }
 LIB.minimapShared = shared
 local registerCount = LIB.minimapRegisterCount or 0
 
@@ -71,13 +71,16 @@ end
 -- ---------------------------------------------------------------------------
 local function Adopt(store)
     local saved = store.yippyappMinimap
+    -- Take whatever this addon remembers and we don't have yet. An EMPTY saved table must not count
+    -- as "adopted": that used to freeze the shared state empty for good, so the shared button lost
+    -- its place on every reload.
     if type(saved) == "table" and saved ~= shared.data then
-        if shared.fresh then
-            for k, v in pairs(saved) do shared.data[k] = v end
-            shared.fresh = false
+        for k, v in pairs(saved) do
+            if shared.data[k] == nil then shared.data[k] = v end
         end
-    elseif shared.fresh and shared.data.minimapPos == nil and store.minimap and store.minimap.minimapPos then
-        -- First time grouped: start where this addon's own button was.
+    end
+    -- Still no place of its own: start where this addon's own button was.
+    if shared.data.minimapPos == nil and store.minimap and store.minimap.minimapPos then
         shared.data.minimapPos = store.minimap.minimapPos
     end
     store.yippyappMinimap = shared.data
@@ -273,6 +276,8 @@ function LIB.RegisterMinimapButton(id, opts, savedTable)
         buttons[id] = b
     end
     b.store, b.object, b.opts = savedTable, obj, opts
+    -- For the diagnostics: what this addon's own button remembered when it registered.
+    b.loadedPos = savedTable.minimap and savedTable.minimap.minimapPos
     Adopt(savedTable)
     Refresh()
     return true
@@ -294,8 +299,25 @@ end
 
 function LIB.SetMinimapGrouped(on)
     shared.data.group = on and true or false
-    shared.fresh = false
     Refresh()
+end
+
+-- Support diagnostics (a hidden command): where the shared button's place is meant to come from.
+function LIB.DebugMinimap()
+    local function out(fmt, ...) print("|cffffd100YippYapp|r " .. fmt:format(...)) end
+    local ldb, dbicon = Libs()
+    local button = dbicon and dbicon:GetMinimapButton(GROUP)
+    out("minimap v%d, grouped=%s, LDB=%s, LibDBIcon=%s, shared button=%s, its db is the shared table: %s",
+        VERSION, tostring(LIB.IsMinimapGrouped()), tostring(ldb ~= nil), tostring(dbicon ~= nil),
+        tostring(button ~= nil), tostring(button ~= nil and button.db == shared.data))
+    out("shared state: minimapPos=%s, hide=%s, group=%s", tostring(shared.data.minimapPos),
+        tostring(shared.data.hide), tostring(shared.data.group))
+    for id, b in pairs(buttons) do
+        out("%s: own minimapPos=%s (at register %s), table shared: %s, in the group: %s, own button: %s", id,
+            tostring(b.store.minimap and b.store.minimap.minimapPos), tostring(b.loadedPos),
+            tostring(b.store.yippyappMinimap == shared.data), tostring(LIB.IsMinimapButtonShown(id)),
+            tostring(dbicon ~= nil and dbicon:IsRegistered(id)))
+    end
 end
 
 -- A newer copy loaded after addons registered with an older one: redraw with this version.

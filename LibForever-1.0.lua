@@ -5,13 +5,13 @@
 -- so two of our addons loaded together can read each other's live data without any saved-variable tricks.
 --
 -- Modules:
---   identity   who am I / who is that (realmless names, surnames)
+--   identity   who am I / who is that (realmless names, surnames, whisper targets)
 --   roster     the guild roster, kept fresh, with online state
---   comm       guild addon messages: prefix per addon, throttled, queued while chat is locked down
+--   comm       guild addon messages: one prefix per addon, throttled (never gated by chat lockdown)
 --   map        where am I, and how far away is that in yards (map sizes from the client's own data)
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations
-local MAJOR, MINOR = "LibForever-1.0", 2
+local MAJOR, MINOR = "LibForever-1.0", 4
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -108,6 +108,17 @@ function LIB.ShortName(full)
     return short
 end
 
+--- The name the server accepts for a whisper (chat or addon): plain for someone on our own realm,
+--- because "Name-OurRealm" answers "No player named ... is currently playing". Other realms keep
+--- their suffix. Storage and comparisons still use the full "Name-Realm" form.
+function LIB.WhisperName(full)
+    if not full or full == "" then return full end
+    local name, realm = full:match("^(.-)%-(.+)$")
+    if not name then return full end
+    local function plain(s) return (s or ""):gsub("[%s%-']", ""):lower() end
+    return plain(realm) == plain(LIB.Realm()) and name or full
+end
+
 function LIB.ClassColor(classFile)
     local c = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
     if not c then return "ffcccccc" end
@@ -172,13 +183,33 @@ if firstLoad then
 end
 
 -- ---------------------------------------------------------------------------
--- Comms: one registered prefix per addon, queued while chat is locked down
+-- Comms: one registered prefix per addon
+-- Addon messages are NOT affected by chat messaging lockdown: the client's own documentation gives
+-- C_ChatInfo.SendAddonMessage no lockdown clause (only SecretArguments = "NotAllowed"), while the
+-- chat-line getters carry SecretInChatMessagingLockdown. We used to hold messages back during
+-- lockdown, which silenced our addons for the rest of the session. Never gate addon comms again.
 -- ---------------------------------------------------------------------------
 LIB.comms = LIB.comms or {}
-LIB.commHeld = LIB.commHeld or {}
+LIB.commStats = LIB.commStats or {}   -- [prefix] = { sent = n, received = n }
 
+--- Only for REAL chat (a whisper the player would read), never for addon messages.
 function LIB.InChatLockdown()
     return (C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()) or false
+end
+
+local function Stats(prefix)
+    local s = LIB.commStats[prefix]
+    if not s then
+        s = { sent = 0, received = 0 }
+        LIB.commStats[prefix] = s
+    end
+    return s
+end
+
+--- How many messages this prefix has sent and received this session (for an addon's status line).
+function LIB.CommStats(prefix)
+    local s = Stats(prefix)
+    return s.sent, s.received
 end
 
 --- Register a message prefix. onMessage(prefix, text, distribution, senderFullName)
@@ -195,36 +226,27 @@ function LIB.RegisterComm(prefix, onMessage)
         if not sender or sender == LIB.Me() then return end
         if dist ~= "GUILD" and dist ~= "WHISPER" then return end
         if dist == "WHISPER" and not LIB.IsGuildie(sender) then return end
+        Stats(prefix).received = Stats(prefix).received + 1
         onMessage(prefix, text, dist, sender)
     end)
     LIB.comms[prefix] = holder
     return true
 end
 
---- Send a message. Held (up to 60) while addon chat is locked down, then flushed.
+--- Send a message. It goes out straight away; addon messages are never held back.
+--- Whisper targets are normalised here, so callers can pass the full "Name-Realm" they store.
 function LIB.Send(prefix, text, dist, target, prio)
     local holder = LIB.comms[prefix]
-    if not holder or not IsInGuild() then return end
+    if not holder or not IsInGuild() then return false end
     prio = prio or "NORMAL"
-    if LIB.InChatLockdown() then
-        local held = LIB.commHeld
-        if #held < 60 then held[#held + 1] = { prefix = prefix, text = text, dist = dist, target = target, prio = prio } end
-        return false
-    end
+    if dist == "WHISPER" then target = LIB.WhisperName(target) end
     holder:SendCommMessage(prefix, text, dist, target, prio)
+    Stats(prefix).sent = Stats(prefix).sent + 1
     return true
 end
 
-function LIB.FlushHeld()
-    if LIB.InChatLockdown() or #LIB.commHeld == 0 then return end
-    local queue = LIB.commHeld
-    LIB.commHeld = {}
-    for _, m in ipairs(queue) do
-        local holder = LIB.comms[m.prefix]
-        if holder then holder:SendCommMessage(m.prefix, m.text, m.dist, m.target, m.prio) end
-    end
-end
-if firstLoad then C_Timer.NewTicker(10, function() LIB.FlushHeld() end) end
+-- Kept so older callers don't break; nothing is held back any more.
+function LIB.FlushHeld() end
 
 -- ---------------------------------------------------------------------------
 -- Map maths: normalised map coordinates in, yards out (sizes in Maps.lua)
