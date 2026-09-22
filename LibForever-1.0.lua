@@ -7,11 +7,11 @@
 -- Modules:
 --   identity   who am I / who is that (realmless names, surnames, whisper targets)
 --   roster     the guild roster, kept fresh, with online state
---   comm       guild addon messages: one prefix per addon, throttled (never gated by chat lockdown)
+--   comm       guild addon messages: one prefix per addon, sent at once, lockdown refusals retried
 --   map        where am I, and how far away is that in yards (map sizes from the client's own data)
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations
-local MAJOR, MINOR = "LibForever-1.0", 4
+local MAJOR, MINOR = "LibForever-1.0", 6
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -153,8 +153,17 @@ function LIB.IsOnline(full)
     return (r and r.online) or false
 end
 
+--- Strict: only true when the guild roster we hold lists them. The roster can be empty or partial
+--- (we never request it; see RequestRoster), so use KnownGuildie to accept messages.
 function LIB.IsGuildie(full)
     return LIB.roster[full] ~= nil
+end
+
+--- Lenient: in the roster, OR heard from on the GUILD addon channel this session (only guild
+--- members can reach us there). Use this to accept whispers: a partial roster must not drop replies.
+LIB.guildHeard = LIB.guildHeard or {}
+function LIB.KnownGuildie(full)
+    return full ~= nil and (LIB.roster[full] ~= nil or LIB.guildHeard[full] == true)
 end
 
 function LIB.RebuildRoster()
@@ -184,13 +193,23 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Comms: one registered prefix per addon
--- Addon messages are NOT affected by chat messaging lockdown: the client's own documentation gives
--- C_ChatInfo.SendAddonMessage no lockdown clause (only SecretArguments = "NotAllowed"), while the
--- chat-line getters carry SecretInChatMessagingLockdown. We used to hold messages back during
--- lockdown, which silenced our addons for the rest of the session. Never gate addon comms again.
+-- Addon messages are NOT gated by chat messaging lockdown: the client's own documentation gives
+-- C_ChatInfo.SendAddonMessage no lockdown clause, while the chat-line getters carry
+-- SecretInChatMessagingLockdown. We used to hold messages back up front during that lockdown, which
+-- silenced our addons for the rest of the session. Never gate addon comms with a check beforehand.
+-- What decides is the client's answer to each send (Enum.SendAddonMessageResult), which AceComm and
+-- ChatThrottleLib hand back per chunk: a message counts as sent only when every chunk went out; one
+-- refused with AddOnMessageLockdown is sent again, whole, once the restriction lifts.
 -- ---------------------------------------------------------------------------
 LIB.comms = LIB.comms or {}
-LIB.commStats = LIB.commStats or {}   -- [prefix] = { sent = n, received = n }
+LIB.commStats = LIB.commStats or {}   -- [prefix] = { sent, received, refused = { [reason] = n } }
+LIB.commRetry = LIB.commRetry or {}   -- messages refused by a lockdown, oldest first
+local MAX_RETRY = 20
+
+local RESULT = Enum and Enum.SendAddonMessageResult or {}
+local RESULT_NAME = {}
+for name, code in pairs(RESULT) do RESULT_NAME[code] = name end
+local LOCKDOWN = RESULT.AddOnMessageLockdown or 11
 
 --- Only for REAL chat (a whisper the player would read), never for addon messages.
 function LIB.InChatLockdown()
@@ -200,16 +219,22 @@ end
 local function Stats(prefix)
     local s = LIB.commStats[prefix]
     if not s then
-        s = { sent = 0, received = 0 }
+        s = { sent = 0, received = 0, refused = {} }
         LIB.commStats[prefix] = s
     end
+    s.refused = s.refused or {}
     return s
 end
 
---- How many messages this prefix has sent and received this session (for an addon's status line).
+--- This session's traffic for a prefix, for an addon's status line:
+--- sent (whole messages that went out), received, refused (total), waiting (queued for a retry),
+--- and a table of refusals by reason name (e.g. AddOnMessageLockdown, TargetOffline).
 function LIB.CommStats(prefix)
     local s = Stats(prefix)
-    return s.sent, s.received
+    local refused, waiting = 0, 0
+    for _, n in pairs(s.refused) do refused = refused + n end
+    for _, m in ipairs(LIB.commRetry) do if m.prefix == prefix then waiting = waiting + 1 end end
+    return s.sent, s.received, refused, waiting, s.refused
 end
 
 --- Register a message prefix. onMessage(prefix, text, distribution, senderFullName)
@@ -225,7 +250,8 @@ function LIB.RegisterComm(prefix, onMessage)
         sender = LIB.FullName(sender)
         if not sender or sender == LIB.Me() then return end
         if dist ~= "GUILD" and dist ~= "WHISPER" then return end
-        if dist == "WHISPER" and not LIB.IsGuildie(sender) then return end
+        if dist == "GUILD" then LIB.guildHeard[sender] = true end
+        if dist == "WHISPER" and not LIB.KnownGuildie(sender) then return end
         Stats(prefix).received = Stats(prefix).received + 1
         onMessage(prefix, text, dist, sender)
     end)
@@ -233,20 +259,61 @@ function LIB.RegisterComm(prefix, onMessage)
     return true
 end
 
---- Send a message. It goes out straight away; addon messages are never held back.
---- Whisper targets are normalised here, so callers can pass the full "Name-Realm" they store.
-function LIB.Send(prefix, text, dist, target, prio)
-    local holder = LIB.comms[prefix]
-    if not holder or not IsInGuild() then return false end
-    prio = prio or "NORMAL"
-    if dist == "WHISPER" then target = LIB.WhisperName(target) end
-    holder:SendCommMessage(prefix, text, dist, target, prio)
-    Stats(prefix).sent = Stats(prefix).sent + 1
+local function Retry(m)
+    local queue = LIB.commRetry
+    if #queue >= MAX_RETRY then tremove(queue, 1) end  -- oldest out first
+    queue[#queue + 1] = m
+end
+
+-- Called by ChatThrottleLib (through AceComm) for every chunk: (message, sent, bytes so far, result).
+-- The last chunk reports bytes == the whole length; that is when the message is settled.
+local function OnChunk(m, sent, bytes, result)
+    if not sent and not m.refusal then m.refusal = result or RESULT.GeneralError or 9 end
+    if (bytes or 0) < m.length then return end
+    local s = Stats(m.prefix)
+    if not m.refusal then
+        s.sent = s.sent + 1
+        -- Something went through: the restriction may be over, so try what was waiting.
+        if #LIB.commRetry > 0 then LIB.Debounce("commRetry", 1, function() LIB.FlushHeld() end) end
+        return
+    end
+    local reason = RESULT_NAME[m.refusal] or tostring(m.refusal)
+    s.refused[reason] = (s.refused[reason] or 0) + 1
+    if m.refusal == LOCKDOWN then
+        m.refusal = nil
+        Retry(m)
+    end
+end
+
+local function Dispatch(m)
+    local holder = LIB.comms[m.prefix]
+    if not holder then return false end
+    holder:SendCommMessage(m.prefix, m.text, m.dist, m.target, m.prio, OnChunk, m)
     return true
 end
 
--- Kept so older callers don't break; nothing is held back any more.
-function LIB.FlushHeld() end
+--- Send a message now (never held back beforehand). Returns true when it was handed to the client.
+--- Whisper targets are normalised here, so callers can pass the full "Name-Realm" they store.
+function LIB.Send(prefix, text, dist, target, prio)
+    if not LIB.comms[prefix] or not IsInGuild() then return false end
+    if dist == "WHISPER" then target = LIB.WhisperName(target) end
+    return Dispatch({ prefix = prefix, text = text, dist = dist, target = target,
+                      prio = prio or "NORMAL", length = #(text or "") })
+end
+
+--- Send again whatever an addon-message lockdown refused. Runs by itself when a restriction changes
+--- or a message goes through; a message refused again simply waits for the next chance.
+function LIB.FlushHeld()
+    local queue = LIB.commRetry
+    if #queue == 0 then return end
+    LIB.commRetry = {}
+    for _, m in ipairs(queue) do Dispatch(m) end
+end
+if firstLoad then
+    pcall(LIB.On, "ADDON_RESTRICTION_STATE_CHANGED", function()
+        if #LIB.commRetry > 0 then LIB.Debounce("commRetry", 1, function() LIB.FlushHeld() end) end
+    end)
+end
 
 -- ---------------------------------------------------------------------------
 -- Map maths: normalised map coordinates in, yards out (sizes in Maps.lua)

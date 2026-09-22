@@ -18,7 +18,7 @@ the modules you use.
 
 | File | What it gives you |
 |---|---|
-| `LibForever-1.0.lua` | **Core.** Events and callbacks: `On(event, fn)`, `Listen`, `Fire`, `Debounce`. Identity: `Me`, `FullName`, `ShortName`, `ColorName`. The guild roster, from the updates the server sends: `roster`, `IsOnline`, `IsGuildie`. Guild addon comms: `RegisterComm`, `Send` (needs AceComm-3.0), with `CommStats(prefix)` for a sent/received count. Map distance in yards: `MyPosition`, `Distance`. Shared data: `ProvideData`, `GetData`. Saved-variable defaults and migrations: `PrepareDB(db, defaults, migrations, version)`. |
+| `LibForever-1.0.lua` | **Core.** Events and callbacks: `On(event, fn)`, `Listen`, `Fire`, `Debounce`. Identity: `Me`, `FullName`, `ShortName`, `ColorName`. The guild roster, from the updates the server sends: `roster`, `IsOnline`, `IsGuildie` (roster only) and `KnownGuildie` (roster, or heard on the guild addon channel). Guild addon comms: `RegisterComm`, `Send` (needs AceComm-3.0), with `CommStats(prefix)` for a sent/received count. Map distance in yards: `MyPosition`, `Distance`. Shared data: `ProvideData`, `GetData`. Saved-variable defaults and migrations: `PrepareDB(db, defaults, migrations, version)`. |
 | `Maps.lua` | Generated Forever map sizes, which `Distance` uses. |
 | `Launcher.lua` | **An optional launcher bar** at a screen edge, with one button per addon. It is off by default, and players turn it on from the YippYapp settings page. `RegisterLauncher(entry, savedTable)`, `SetLauncherHidden(id, hidden)`, `SetLauncherEnabled(on)`. `LauncherOptions(parent, id)` gives you a 300x60 block for your own settings page that links to the YippYapp page. |
 | `Windows.lua` | **Window handling.** `RegisterWindow(frame, savedTable, key)` makes a window toplevel and draggable and saves where it was put. The first time, it opens beside our other open windows. Escape closes one window at a time, and the close button works in combat. `RegisterPopup(frame)` gives a popup the same Escape and close handling. |
@@ -50,6 +50,15 @@ LIB.RegisterWindow(myWindow, MyAddonDB, "pos")
 ```
 
 Each file's header comment documents its full API.
+
+## Rules for code that uses it
+
+- **Never close Blizzard's Settings panel from addon code:** no `SettingsPanel:Close()`, `HideUIPanel(SettingsPanel)` or
+  `ToggleGameMenu()`. Closing it returns to the game menu, which calls a protected function, and from addon code that
+  is blocked (`ADDON_ACTION_FORBIDDEN`). To show one of your windows from a settings page, open it above the panel
+  and leave the panel open, as the welcome window does.
+- Don't gate addon messages on `InChatLockdown()`. That lockdown is for real chat; addon messages go out, and
+  `Send` deals with a refused message itself.
 
 ## Embedding
 

@@ -19,7 +19,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 2
+local VERSION = 3
 if (LIB.settingsVersion or 0) >= VERSION then return end
 LIB.settingsVersion = VERSION
 
@@ -249,8 +249,9 @@ local function Build()
     c.welcome:SetPoint("TOPLEFT", c.list, "BOTTOMLEFT", 14, -14)
     c.welcome:SetText("Welcome / what's new")
     c.welcome:SetScript("OnClick", function()
-        -- The Options panel is protected in combat; leave it open then.
-        if SettingsPanel and SettingsPanel:IsShown() and not InCombatLockdown() then SettingsPanel:Close() end
+        -- Never close Blizzard's Settings from addon code: SettingsPanel:Close() returns to the game
+        -- menu through ToggleGameMenu, which calls the protected SpellStopCasting and is then blocked
+        -- as ADDON_ACTION_FORBIDDEN. The welcome window opens above the Settings panel instead.
         if LIB.OpenWelcome then LIB.OpenWelcome() end
     end)
     c.psst = c:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")

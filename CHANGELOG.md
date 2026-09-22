@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2
+
+- Addon messages go by the game's own answer: sent, or refused (for example during an encounter). Refused
+  messages wait and are sent again when the restriction lifts. LIB.CommStats shows sent, received and refused.
+- Guildies are recognised from the guild addon channel too, so whispers from them are never dropped when the
+  guild roster is empty or incomplete (LIB.KnownGuildie).
+- Our windows and popups open above Blizzard's Settings instead of closing it, which could raise an
+  ADDON_ACTION_FORBIDDEN error.
+- Welcome window: tab labels are centred on the tab art.
+
 ## 1.0.1
 
 - **Addon messages are sent again.** Messages were held back while the game's chat lockdown was on, but that

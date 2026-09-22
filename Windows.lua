@@ -27,14 +27,19 @@
 --       is harmless.
 -- Escape and the close buttons only ever call :Hide() on our own frames, never HideUIPanel, so they
 -- work in combat too.
+-- Shown while Blizzard's Settings panel is open, a registered window or popup goes above the panel,
+-- and back to its own strata when the panel closes: settings buttons just open the window and leave
+-- the panel alone (never SettingsPanel:Close() from addon code).
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 3
+local VERSION = 4
 if (LIB.windowsVersion or 0) >= VERSION then return end
 LIB.windowsVersion = VERSION
 
 local STRATA = "HIGH"
+-- Above Blizzard's Settings panel, for windows opened from a settings page while it is open.
+local OVER_SETTINGS = "FULLSCREEN_DIALOG"
 local GAP = 12      -- between side-by-side windows
 local CASCADE = 32  -- offset when there is no room beside
 
@@ -215,6 +220,39 @@ local function RewireClose(f)
     end)
 end
 
+-- A window or popup shown while Blizzard's Settings panel is open goes above it, and drops back to its
+-- own strata once the panel closes. Settings buttons can then just open our windows: they must never
+-- close the panel themselves (SettingsPanel:Close() ends in a protected call and is blocked).
+local function SettingsOpen()
+    return SettingsPanel ~= nil and SettingsPanel:IsShown()
+end
+
+local function BaseStrata(f)
+    if windows[f] then return STRATA end
+    return f.libForeverStrata or f:GetFrameStrata()
+end
+
+local function HookSettingsPanel()
+    if LIB.windowSettingsHooked or not SettingsPanel then return end
+    LIB.windowSettingsHooked = true
+    SettingsPanel:HookScript("OnHide", function() LIB.DropWindowsBelowSettings() end)
+end
+
+function LIB.DropWindowsBelowSettings()
+    for f in pairs(windows) do f:SetFrameStrata(STRATA) end
+    for f in pairs(popups) do f:SetFrameStrata(BaseStrata(f)) end
+end
+
+function LIB.ApplyWindowLayer(f)
+    if SettingsOpen() then
+        HookSettingsPanel()
+        f:SetFrameStrata(OVER_SETTINGS)
+        f:Raise()
+    else
+        f:SetFrameStrata(BaseStrata(f))
+    end
+end
+
 local function LeaveSpecialFrames(f)
     local name = f:GetName()
     if not name then return end
@@ -237,6 +275,7 @@ function LIB.RegisterWindow(f, savedTable, key)
             if not ww then return end
             if not ww.placed and not Restore(self) then Place(self) end
             ww.placed = true
+            LIB.ApplyWindowLayer(self)
             LIB.RaiseWindow(self)
             LIB.SyncWindowEscape()
         end)
@@ -296,8 +335,10 @@ function LIB.RegisterPopup(f)
     LeaveSpecialFrames(f)
     RewireClose(f)
     if popups[f] then return end
+    f.libForeverStrata = f:GetFrameStrata()   -- its own strata, to return to after Settings closes
     popups[f] = f:IsShown() and raiseCount + 1 or 0
     f:HookScript("OnShow", function(self)
+        LIB.ApplyWindowLayer(self)
         raiseCount = raiseCount + 1
         LIB.windowRaiseCount = raiseCount
         popups[self] = raiseCount

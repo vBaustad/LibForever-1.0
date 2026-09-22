@@ -29,7 +29,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 8
+local VERSION = 9
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -187,6 +187,33 @@ local function MakeTab(parent)
     return b
 end
 
+-- The template's art doesn't fill the whole button (and the selected tab's art is a different height),
+-- so "centre of the button" reads high. Centre the label on the visible art instead, measured after
+-- layout; run again after every selection change, since the template can re-anchor its Text then.
+local function CentreTabText(b)
+    local bt, bb = b:GetTop(), b:GetBottom()
+    if not bt or not bb then return end
+    local top, bottom
+    for _, r in ipairs({ b:GetRegions() }) do
+        if r ~= b.icon and r.IsObjectType and r:IsObjectType("Texture") and r:IsShown()
+            and r:GetDrawLayer() ~= "HIGHLIGHT" then
+            local t, bo = r:GetTop(), r:GetBottom()
+            if t and bo and t > bo then
+                top = top and math.max(top, t) or t
+                bottom = bottom and math.min(bottom, bo) or bo
+            end
+        end
+    end
+    local dy = top and ((top + bottom) / 2 - (bt + bb) / 2) or 0
+    b.Text:ClearAllPoints()
+    b.Text:SetPoint("CENTER", b, "CENTER", (TAB_ICON + TAB_GAP) / 2, dy)
+end
+
+local function CentreTabs()
+    if not win then return end
+    for _, b in ipairs(win.tabs) do if b:IsShown() then CentreTabText(b) end end
+end
+
 local function Build()
     win = CreateFrame("Frame", "LibForeverWelcome", UIParent, "SettingsFrameTemplate")
     LIB.welcomeFrame = win
@@ -290,6 +317,9 @@ function Select(id)
             b:SetSelected(b.id == id)
         end
     end
+    -- Now, and once more on the next frame when the new art has its final size.
+    CentreTabs()
+    C_Timer.After(0, CentreTabs)
     for _, q in pairs(pages) do if q.page then q.page:Hide() end end
     SetIcon(win.icon, p)
     win.heading:SetText(p.title or p.id)
@@ -369,7 +399,12 @@ local function Show(list, selectId)
     win.body:SetPoint("TOPLEFT", 24, bodyTop)
     win.body:SetSize(W - 48, H + bodyTop - (18 + psstH + 22 + SHARED_H + 6))
 
+    -- Opened from the Settings panel: show above it rather than closing it (closing Blizzard's
+    -- Settings from addon code is forbidden; see Settings.lua).
+    local overSettings = SettingsPanel and SettingsPanel:IsShown()
+    win:SetFrameStrata(overSettings and "FULLSCREEN_DIALOG" or "HIGH")
     win:Show()
+    win:Raise()
     local pick = pages[selectId] and selectId or nil
     if not pick then
         for _, p in ipairs(list) do if Unseen(p) then pick = p.id break end end
