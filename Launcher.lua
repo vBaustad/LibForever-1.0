@@ -21,7 +21,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 13
+local VERSION = 15
 if (LIB.launcherVersion or 0) >= VERSION then return end
 LIB.launcherVersion = VERSION
 
@@ -174,7 +174,9 @@ local function CursorPosition(currentEdge)
     return edge, math.max(0, math.min(1, offset))
 end
 
-local function DragUpdate()
+-- Runs per frame, but only while the bar is actually being dragged.
+local function DragUpdate(self)
+    if not dragPos or not self:IsShown() then self:SetScript("OnUpdate", nil) return end
     local edge, offset = CursorPosition(dragPos.edge)
     if edge ~= dragPos.edge or math.abs(offset - dragPos.offset) > 0.0005 then
         dragPos.edge, dragPos.offset = edge, offset
@@ -203,7 +205,9 @@ local function StopDrag()
 end
 
 -- Collapse style: open while the mouse is over the bar, close shortly after it leaves.
+-- Runs per frame only while the collapsed bar is open under the mouse, and stops as soon as it isn't.
 local function HoverWatch(self, elapsed)
+    if not self:IsShown() then self:SetScript("OnUpdate", nil) return end
     if dragPos then return end
     if self:IsMouseOver() then
         self.away = 0
@@ -380,6 +384,9 @@ end
 -- guess (IsLauncherEnabled's fallback) into a stored choice, so the switch always shows a saved value
 -- and nothing flips it later depending on which addons happen to be loaded.
 local function SettleEnabled()
+    -- Never write into saved tables the client failed to load this session: that would turn a guess
+    -- into a "choice" and overwrite what is still on disk.
+    if LIB.SavedVariablesLoaded and not LIB.SavedVariablesLoaded() then return end
     if Pref("enabled", nil) == nil and #stores > 0 then SetPref("enabled", LIB.IsLauncherEnabled()) end
 end
 

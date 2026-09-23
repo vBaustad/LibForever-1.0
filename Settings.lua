@@ -1,41 +1,130 @@
---- LibForever-1.0: the one YippYapp settings page (Options > AddOns > YippYapp).
--- Everything the YippYapp addons share is set here, once, instead of on every addon's own page:
--- the grouped minimap button, the launcher bar, and for each installed addon its minimap and launcher
--- buttons plus a way to its own settings. The page is registered once, however many embedded copies
--- load; the newest copy of this file draws it.
+--- LibForever-1.0: the YippYapp settings.
+-- Every YippYapp setting lives in OUR OWN window (the YippYapp window), because opening Blizzard's
+-- Options closes whatever else the player had open. Blizzard's Options > AddOns > YippYapp keeps one
+-- page with one button that opens our window.
 --
---   LIB.OpenYippYappSettings()                 open the page (not in combat: the Settings panel is protected)
---   LIB.RegisterOptionsPage(id, frame, name) -> category
---       the addon's own settings page as a subcategory under YippYapp (name defaults to id); also
---       sets what the page's "Settings..." button opens. Returns nil without the Settings API, and
---       then the addon registers its own top-level category. Calling it again returns the same category.
---   LIB.RegisterSettingsPage(id, categoryOrFunc)
---       optional: what the addon's "Settings" button opens - a Settings category (or its ID), or a
---       function. Without it the page looks for a Settings category named like the addon's id.
---   /yippyapp settings                         opens it too
+--   LIB.OpenYippYappSettings(id)   open the settings in our window (with id: that addon's settings)
+--   LIB.OpenAddonSettings(id)      the same, for one addon
+--   LIB.RegisterOptionsPage(id, frame, name, height) -> handle
+--       the addon's own settings panel, hosted in our window (name defaults to id). The frame stays
+--       the addon's: the lib reparents it in, gives it the window's width, scrolls it when `height`
+--       is taller than the room, and runs its OnShow every time it is shown. The handle has
+--       :Open(); its GetID() is nil, because these are no longer Blizzard categories - open them
+--       with LIB.OpenAddonSettings(id), never Settings.OpenToCategory.
+--   LIB.BuildYippYappSettings(host)  the shared settings block, for the window
+--   /yippyapp settings             opens it too
 --
 -- Every control reads its value again whenever the page is shown, so it never shows a stale value
 -- after something changed elsewhere (an addon's own page, the launcher's right-click menu).
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 3
+local VERSION = 7
 if (LIB.settingsVersion or 0) >= VERSION then return end
 LIB.settingsVersion = VERSION
 
 LIB.settingsPages = LIB.settingsPages or {}
 
 local ROW_H = 28
-local COL_MINIMAP, COL_LAUNCHER, COL_SETTINGS = 250, 360, 460
+local COL_MINIMAP, COL_LAUNCHER = 210, 320   -- the Settings button is right-aligned instead
 
 -- ---------------------------------------------------------------------------
 -- The category: one panel, registered once
 -- ---------------------------------------------------------------------------
-local panel = LIB.settingsPanel or CreateFrame("Frame")
+-- A new frame starts out "shown", and Settings only calls Show() on the page it displays. A shown
+-- frame's OnShow never fires then, so every page starts hidden and also gets an OnRefresh.
+local panel = LIB.settingsPanel
+if not panel then
+    panel = CreateFrame("Frame")
+    panel:Hide()
+end
 LIB.settingsPanel = panel
+
+-- "Buy me a coffee": WoW can't open a browser, so the button shows the link ready to copy.
+local BMC_URL = "buymeacoffee.com/vbaustad"
+StaticPopupDialogs["LIBFOREVER_YIPPYAPP_BMC"] = {
+    text = "Thanks for using YippYapp!\nCopy the link below if you'd like to buy me a coffee.",
+    button1 = CLOSE,
+    hasEditBox = true,
+    editBoxWidth = 260,
+    OnShow = function(self)
+        local eb = self.EditBox or self.editBox  -- the field name differs between client builds
+        if not eb then return end
+        eb:SetText(BMC_URL)
+        eb:HighlightText()
+        eb:SetFocus()
+    end,
+    EditBoxOnEnterPressed = function(self) self:GetParent():Hide() end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+}
+
+--- The window's footer has the coffee button; this opens its copyable link.
+function LIB.ShowCoffeePopup()
+    StaticPopup_Show("LIBFOREVER_YIPPYAPP_BMC")
+end
+
+-- A settings panel taller than the room it gets: put it in a scroll frame. The panel becomes the
+-- scroll child, sized to the scroll frame's width and the given height. (Used by the window.)
+function LIB.PanelScroller(page, height)
+    local outer = CreateFrame("Frame")
+    outer:Hide()
+    local scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 0, -4)
+    scroll:SetPoint("BOTTOMRIGHT", -28, 4)
+    page:SetParent(scroll)
+    page:ClearAllPoints()
+    page:SetSize(600, height)
+    scroll:SetScrollChild(page)
+    scroll:SetScript("OnSizeChanged", function(_, w) if w and w > 0 then page:SetWidth(w) end end)
+    page:Show()
+    outer.page, outer.scroll = page, scroll
+    return outer
+end
+
+-- Make sure a panel refreshes whenever it is shown: its own OnShow runs when the frame that is
+-- actually shown (the panel, or its scroll wrapper) appears, and again from OnRefresh.
+function LIB.PanelRefreshHook(shown, page)
+    local function run()
+        local onShow = page:GetScript("OnShow")
+        if onShow then
+            local ok, err = pcall(onShow, page)
+            if not ok then LIB.Debug("options page OnShow: %s", tostring(err)) end
+        end
+    end
+    if shown ~= page then shown:HookScript("OnShow", run) end
+    if not shown.OnRefresh then shown.OnRefresh = function() run() end end
+    shown:Hide()
+end
+
+-- Blizzard's Options gets ONE page with ONE button. Opening Blizzard's Options closes the player's
+-- other windows, so every YippYapp setting lives in our own window instead.
+local function BuildBlizzardPage()
+    if panel.built then return end
+    panel.built = true
+    local emblem = panel:CreateTexture(nil, "ARTWORK")
+    emblem:SetSize(36, 36)
+    emblem:SetPoint("TOPLEFT", 14, -14)
+    if LIB.mediaPath then emblem:SetTexture(LIB.mediaPath .. "yippyapp") end
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightHuge")
+    title:SetPoint("TOPLEFT", emblem, "TOPRIGHT", 10, -4)
+    title:SetText("YippYapp")
+    local text = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    text:SetPoint("TOPLEFT", 16, -64)
+    text:SetPoint("RIGHT", panel, "RIGHT", -16, 0)
+    text:SetJustifyH("LEFT")
+    text:SetText("Every YippYapp setting lives in the YippYapp window, so opening them doesn't close "
+        .. "what you had open.")
+    local open = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    open:SetSize(200, 24)
+    open:SetPoint("TOPLEFT", 16, -104)
+    open:SetText("Open YippYapp settings")
+    open:SetScript("OnClick", function() LIB.OpenYippYappSettings() end)
+end
 
 local function Register()
     if LIB.settingsCategory or not (Settings and Settings.RegisterCanvasLayoutCategory) then return end
+    BuildBlizzardPage()
     local category = Settings.RegisterCanvasLayoutCategory(panel, "YippYapp")
     Settings.RegisterAddOnCategory(category)
     LIB.settingsCategory = category
@@ -43,39 +132,73 @@ end
 Register()
 if not LIB.settingsCategory then LIB.On("PLAYER_LOGIN", function() Register() end) end
 
-local function CombatMessage(what)
-    UIErrorsFrame:AddMessage(what .. " can't open during combat.", 1, 0.2, 0.2)
-end
-
-function LIB.OpenYippYappSettings()
-    if InCombatLockdown() then CombatMessage("The YippYapp settings") return end
+--- Open the YippYapp settings in our own window. With an id, on that addon's settings.
+function LIB.OpenYippYappSettings(id)
+    if LIB.OpenWelcomeSettings then
+        LIB.OpenWelcomeSettings(id)
+        return
+    end
+    -- No welcome window in this build: fall back to Blizzard's page (it holds the button).
     Register()
     local category = LIB.settingsCategory
+    if InCombatLockdown() then
+        UIErrorsFrame:AddMessage("The YippYapp settings can't open during combat.", 1, 0.2, 0.2)
+        return
+    end
     if category and Settings and Settings.OpenToCategory then Settings.OpenToCategory(category:GetID()) end
 end
 
+--- Open one addon's settings in our window. Returns false (and says so in the debug log) when that
+--- addon has no settings panel registered, so a click can never fail silently.
+function LIB.OpenAddonSettings(id)
+    if id and not (LIB.optionsPanels and LIB.optionsPanels[id]) then
+        LIB.Debug("no settings panel registered for %s", tostring(id))
+        LIB.OpenYippYappSettings()   -- the shared settings are better than nothing happening
+        return false
+    end
+    LIB.OpenYippYappSettings(id)
+    return true
+end
+
+-- Old callers: what an addon's "Settings" button opens. Kept, but our own window is preferred.
 function LIB.RegisterSettingsPage(id, categoryOrFunc)
     if id then LIB.settingsPages[id] = categoryOrFunc end
 end
 
--- An addon's own settings page, listed under YippYapp in Options > AddOns. Blizzard's category list
--- picks up subcategories added after the parent was registered (it rebuilds the list), and opening a
--- subcategory expands its parent, so load order between our addons doesn't matter.
-LIB.optionsPages = LIB.optionsPages or {}
+-- ---------------------------------------------------------------------------
+-- An addon's own settings panel, hosted in the YippYapp window
+--   LIB.RegisterOptionsPage(id, frame, name, height)
+-- The frame stays the addon's own; the lib reparents it into the window when that addon's settings
+-- are shown, gives it the window's width (and scrolls it when `height` is taller than the room),
+-- and runs its OnShow every time it is shown.
+-- ---------------------------------------------------------------------------
+LIB.optionsPanels = LIB.optionsPanels or {}
+LIB.optionsPages = LIB.optionsPages or {}   -- kept: id -> what RegisterOptionsPage returned
 
-function LIB.RegisterOptionsPage(id, frame, name)
+function LIB.RegisterOptionsPage(id, frame, name, height)
     if not id or not frame then return nil end
     if LIB.optionsPages[id] then return LIB.optionsPages[id] end
-    Register()
-    local parent = LIB.settingsCategory
-    if not (parent and Settings.RegisterCanvasLayoutSubcategory) then return nil end
-    -- Sort our addons by name under YippYapp, where the client supports it.
-    if parent.SetShouldSortAlphabetically then pcall(parent.SetShouldSortAlphabetically, parent, true) end
-    local category = Settings.RegisterCanvasLayoutSubcategory(parent, frame, name or id)
-    if not category then return nil end
-    LIB.optionsPages[id] = category
-    LIB.RegisterSettingsPage(id, category)
-    return category
+    LIB.optionsPanels[id] = { frame = frame, name = name or id, height = height }
+    frame:Hide()
+    -- A handle the addon can keep. GetID() is nil on purpose: these pages are not Blizzard
+    -- categories any more, so Settings.OpenToCategory must not be called with it.
+    local handle = {
+        id = id,
+        GetID = function() return nil end,
+        Open = function() LIB.OpenAddonSettings(id) end,
+    }
+    LIB.optionsPages[id] = handle
+    return handle
+end
+
+--- The addon settings the window can show, in the order the sidebar lists them.
+function LIB.OptionsPanels()
+    local list = {}
+    for id, entry in pairs(LIB.optionsPanels) do
+        list[#list + 1] = { id = id, name = entry.name, frame = entry.frame, height = entry.height }
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return list
 end
 
 -- ---------------------------------------------------------------------------
@@ -91,18 +214,19 @@ local function FindCategory(name)
 end
 
 local function SettingsTarget(id, label)
+    if LIB.optionsPanels[id] then return "panel" end
     return LIB.settingsPages[id] or FindCategory(id) or (label ~= id and FindCategory(label)) or nil
 end
 
-local function OpenAddonSettings(id, label)
-    if InCombatLockdown() then CombatMessage(label .. "'s settings") return end
+local function OpenSettingsFor(id, label)
     local target = SettingsTarget(id, label)
-    if type(target) == "function" then
+    if target == "panel" then
+        LIB.OpenAddonSettings(id)
+    elseif type(target) == "function" then
         target()
-    elseif type(target) == "table" and target.GetID then
+    elseif type(target) == "table" and target.GetID and target:GetID() then
+        if InCombatLockdown() then CombatMessage(label .. "'s settings") return end
         Settings.OpenToCategory(target:GetID())
-    elseif target then
-        Settings.OpenToCategory(target)
     end
 end
 
@@ -160,29 +284,30 @@ local function Heading(parent, text)
     return fs
 end
 
-local function Build()
-    local old = panel.content
+--- The shared YippYapp settings, built into whatever frame hosts them (our own window).
+--- Returns a frame with :Refresh(); it scrolls when the host is shorter than the content.
+function LIB.BuildYippYappSettings(host)
+    local old = host.content
     if old and old.libVersion == VERSION then return old end
     if old then old:Hide() end
-    local c = CreateFrame("Frame", nil, panel)
+    local scroll = host.scroll
+    if not scroll then
+        scroll = CreateFrame("ScrollFrame", nil, host, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 0, -4)
+        scroll:SetPoint("BOTTOMRIGHT", -28, 4)
+        scroll:SetScript("OnSizeChanged", function(_, w)
+            if w and w > 0 and host.content then host.content:SetWidth(w) end
+        end)
+        host.scroll = scroll
+    end
+    local c = CreateFrame("Frame", nil, scroll)
     c.libVersion = VERSION
-    c:SetAllPoints()
-    panel.content = c
+    c:SetSize(math.max(scroll:GetWidth() or 0, 600), 640)
+    scroll:SetScrollChild(c)
+    host.content = c
 
-    -- Title
-    local emblem = c:CreateTexture(nil, "ARTWORK")
-    emblem:SetSize(36, 36)
-    emblem:SetPoint("TOPLEFT", 14, -12)
-    if LIB.mediaPath then emblem:SetTexture(LIB.mediaPath .. "yippyapp") end
-    local title = c:CreateFontString(nil, "ARTWORK", "GameFontHighlightHuge")
-    title:SetPoint("TOPLEFT", emblem, "TOPRIGHT", 10, -2)
-    title:SetText("YippYapp")
-    local sub = c:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
-    sub:SetText("Settings shared by the YippYapp addons for WoW: Forever. Each addon's own settings are listed under YippYapp on the left.")
-
-    -- Shared
-    local y = -64
+    -- The window's title bar and sidebar say where we are, so the panel starts straight in.
+    local y = -6
     Heading(c, "Shared by all YippYapp addons"):SetPoint("TOPLEFT", 16, y)
     y = y - 20
     c.group = Check(c, "Group YippYapp minimap buttons",
@@ -241,36 +366,23 @@ local function Build()
     c.rows = {}
     c.list = CreateFrame("Frame", nil, c)
     c.list:SetPoint("TOPLEFT", 0, y)
-    c.list:SetSize(600, ROW_H)
-
-    -- Bottom: welcome, then the quiet psst list
-    c.welcome = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
-    c.welcome:SetSize(180, 22)
-    c.welcome:SetPoint("TOPLEFT", c.list, "BOTTOMLEFT", 14, -14)
-    c.welcome:SetText("Welcome / what's new")
-    c.welcome:SetScript("OnClick", function()
-        -- Never close Blizzard's Settings from addon code: SettingsPanel:Close() returns to the game
-        -- menu through ToggleGameMenu, which calls the protected SpellStopCasting and is then blocked
-        -- as ADDON_ACTION_FORBIDDEN. The welcome window opens above the Settings panel instead.
-        if LIB.OpenWelcome then LIB.OpenWelcome() end
-    end)
-    c.psst = c:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    c.psst:SetPoint("TOPLEFT", c.welcome, "BOTTOMLEFT", 2, -16)
-    c.psst:SetWidth(580)
-    c.psst:SetJustifyH("LEFT")
-    c.psst:SetSpacing(2)
+    c.list:SetPoint("RIGHT", c, "RIGHT", -8, 0)
+    c.list:SetHeight(ROW_H)
 
     function c:Row(i)
         local r = self.rows[i]
         if r then return r end
         r = CreateFrame("Frame", nil, self.list)
-        r:SetSize(600, ROW_H)
+        r:SetHeight(ROW_H)
         r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+        r:SetPoint("RIGHT", self.list, "RIGHT", 0, 0)
         r.icon = r:CreateTexture(nil, "ARTWORK")
         r.icon:SetSize(22, 22)
         r.icon:SetPoint("LEFT", 16, 0)
         r.name = r:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
         r.name:SetPoint("LEFT", r.icon, "RIGHT", 8, 0)
+        r.name:SetWidth(COL_MINIMAP - 50)
+        r.name:SetJustifyH("LEFT")
         r.minimap = Check(r)
         r.minimap:SetPoint("LEFT", COL_MINIMAP + 22, 0)
         r.minimap:SetScript("OnClick", function(cb)
@@ -283,9 +395,9 @@ local function Build()
         end)
         r.settings = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
         r.settings:SetSize(110, 22)
-        r.settings:SetPoint("LEFT", COL_SETTINGS, 0)
+        r.settings:SetPoint("RIGHT", -8, 0)
         r.settings:SetText("Settings...")
-        r.settings:SetScript("OnClick", function() OpenAddonSettings(r.id, r.label) end)
+        r.settings:SetScript("OnClick", function() OpenSettingsFor(r.id, r.label) end)
         self.rows[i] = r
         return r
     end
@@ -324,17 +436,19 @@ local function Build()
             r:Show()
         end
         self.list:SetHeight(math.max(1, #list) * ROW_H)
-        self.welcome:SetShown(LIB.OpenWelcome ~= nil)
-        self.psst:SetText(LIB.WelcomePsstText and LIB.WelcomePsstText() or "")
+        -- As tall as the content: measured from the last row, once it has been laid out.
+        C_Timer.After(0, function()
+            local top, bottom = self:GetTop(), self.list:GetBottom()
+            if top and bottom then self:SetHeight(top - bottom + 16) end
+        end)
     end
     return c
 end
 
--- Through LIB, so a newer copy of this file takes the panel over.
+-- Blizzard's page only holds the button; our window draws the settings themselves.
 function LIB.YippYappSettingsOnShow()
-    local c = Build()
-    c:Show()
-    c:Refresh()
+    BuildBlizzardPage()
 end
 panel:SetScript("OnShow", function() LIB.YippYappSettingsOnShow() end)
+panel.OnRefresh = function() LIB.YippYappSettingsOnShow() end
 if panel:IsVisible() then LIB.YippYappSettingsOnShow() end

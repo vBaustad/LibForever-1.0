@@ -1,6 +1,11 @@
 --- LibForever-1.0: the shared welcome window.
--- One window for every YippYapp addon instead of one first-time popup each. Every addon registers its
--- own page; the window shows one tab per page, and a quiet "psst" list of the rest of the family.
+-- One window for every YippYapp addon, and the home of every YippYapp setting (Blizzard's Options
+-- closes whatever else the player had open, so it only holds a button that opens this window).
+-- It opens on a home page with one card per installed addon: the ones that need setting up first,
+-- highlighted and with the reason; the rest below under "All set". A card's button opens the addon
+-- itself, or its page when there is something new. The page has a back button, a sidebar for hopping
+-- between addons and a settings wheel to that addon's own settings. The home page also carries the
+-- beta banner, the note about Forever forgetting settings, and a quiet "psst" list of the family.
 --
 --   LIB.RegisterWelcome({
 --       id = "AutoFeed",          -- unique; also the launcher entry whose line icon the page uses
@@ -10,43 +15,49 @@
 --       version = 1,              -- intro version; raise it and the page counts as unseen again
 --       build = function(page) end,     -- draws the page once, on first view (page size: page:GetSize())
 --       onShow = function(page) end,    -- optional, every time the page is shown
---       needsSetup = function() return true end, -- optional: true auto-opens the window while unseen
---       launcher = "AutoFeed",    -- optional launcher entry id for the icon; defaults to id
---       order = 10,               -- optional tab order
+--       needsSetup = function() return true end, -- optional: true puts the addon first on the home page
+--       reason = "no macros yet",   -- optional: why it needs setting up, shown on its card
+--       setupLabel = "Create macros", -- optional: the real action, on the badge and the button;
+--                                 -- a function works too, for several setup states (nil -> "Set up")
+--       blurb = "...",              -- optional: the one line on its card (else subtitle, else catalogue)
+--       onOpen = function() end,    -- optional: what "Open" runs (else the addon's launcher click)
+--       launcher = "AutoFeed",      -- optional launcher entry id for the icon; defaults to id
+--       order = 10,                 -- optional order
 --   }, savedTable)
---   LIB.OpenWelcome(id)            open it by hand: every page, with id (or the first unseen one) selected
+--   LIB.OpenWelcome(id)            open it by hand: the home page, or straight to one addon's page
+--   LIB.OpenWelcomeSettings(id)    open it on the settings view (id: that addon's own settings)
+--   LIB.RegisterWelcomePage(...)   the same as RegisterWelcome
 --   LIB.IsWelcomeUnseen(id)        LIB.MarkWelcomeSeen(id)
 --   /yippyapp                      opens it too; /yippyapp settings opens the shared YippYapp settings
 --
 -- "Seen" lives in the addon's own saved table: savedTable.welcomeSeen[id] = version. The lib has no
 -- SavedVariables of its own.
 --
+-- The home page carries a gold-on-black beta banner: the addons are actively developed, and bug
+-- reports and comments on CurseForge help (its button shows the link to all YippYapp addons there).
+--
 -- After login (and a short wait) the lib looks at the unseen pages. If one of them needs setup, the
 -- window opens by itself with just the unseen pages, never in combat or in an instance (it waits).
+-- It also opens once, on the home page, after an update brings a new banner message (NOTICE below;
+-- remembered as savedTable.welcomeNotice once the window is closed).
 -- Otherwise nothing pops up and nothing is marked (the launcher is only ever buttons): the pages wait
 -- for /yippyapp or the addon's own way in (e.g. a Welcome button on its settings page -> LIB.OpenWelcome).
 -- A page counts as seen once it has actually been shown and the window closes.
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 9
+local VERSION = 13
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
--- The family, for the "psst" list. Edit freely: folder name, what it is, and how a player can use it
--- together with another one. Keep the combos true: usage tips the player puts together themselves,
--- never a claim that one addon reads or does something in another.
+-- The family, for the "psst" line and the one-line blurb on a card.
 local CATALOG = {
-    { name = "Guildhall",   what = "your guild's crafting directory",
-      combo = "with Skillwright, see which guildie can craft the steps you'd rather skip" },
-    { name = "AutoFeed",    what = "one-button macros for your best food, water and potions",
-      combo = "with BuffWarden, class buffs and your own food and scroll buffs are both covered" },
-    { name = "Skillwright", what = "the cheapest or fastest route to max profession skill",
-      combo = "with Guildhall, find a guildie who already makes what your route needs" },
-    { name = "BuffWarden",  what = "shows the class buffs you and your group are missing",
-      combo = "with AutoFeed, your food and scroll buffs are covered too" },
-    { name = "Campfire",    what = "see which guildies are nearby, and how far",
-      combo = "with Guildhall, find the guildie who crafts for you and meet up" },
+    { name = "Guildhall",   what = "your guild's crafting directory", },
+    { name = "AutoFeed",    what = "one-button macros for your best food, water and potions", },
+    { name = "Skillwright", what = "the cheapest or fastest route to max profession skill", },
+    { name = "BuffWarden",  what = "shows the class buffs you and your group are missing", },
+    { name = "Campfire",    what = "see which guildies are nearby, and how far", },
+    { name = "BagWarden",   what = "keeps your bags tidy", },
 }
 LIB.welcomeCatalog = CATALOG
 
@@ -65,9 +76,9 @@ if LIB.welcomeFrame then
 end
 
 local win           -- the window, built on first open
-local shown = {}    -- ids of the pages in the window right now, in tab order
 local viewed = {}   -- ids actually looked at since the window opened
 local loginDone = LIB.welcomeLoginDone
+local homeShown     -- the home page has been looked at since the window opened
 local autoPending   -- an auto-open is waiting for combat or the instance to end
 
 -- ---------------------------------------------------------------------------
@@ -116,9 +127,8 @@ function LIB.MarkWelcomeSeen(id)
 end
 
 -- ---------------------------------------------------------------------------
--- Psst: the rest of the family, installed ones ticked
+-- Psst: one line about the rest of the family
 -- ---------------------------------------------------------------------------
-local TICK = "|TInterface\\RaidFrame\\ReadyCheck-Ready:12:12:0:0|t"
 
 local function Installed(name)
     if not C_AddOns then return false end
@@ -129,33 +139,26 @@ end
 
 local SHARED_H = 26  -- the "shared settings" line above the psst list
 
-local function PsstText(onlyTitle)
-    local have, rest = {}, {}
+local function PsstText()
+    local have, rest = 0, {}
     for _, a in ipairs(CATALOG) do
-        if Installed(a.name) then have[#have + 1] = TICK .. " " .. a.name
-        else rest[#rest + 1] = a end
+        if Installed(a.name) then have = have + 1 else rest[#rest + 1] = a.name end
     end
-    local lines = {}
+    -- Always ONE line. With the whole family the sentence says it; otherwise the names, cut short
+    -- rather than allowed to wrap.
     if #rest == 0 then
-        lines[1] = "Psst - you have the whole YippYapp family. They work even better together."
-    elseif onlyTitle then
-        lines[1] = ("Psst - %s has siblings in the YippYapp family:"):format(onlyTitle)
-    else
-        lines[1] = "Psst - there are more addons in the YippYapp family:"
+        return ("Psst - you have all %d YippYapp addons."):format(have)
     end
-    if #have > 0 and #rest > 0 then lines[#lines + 1] = "   " .. table.concat(have, "    ") end
-    for _, a in ipairs(rest) do
-        lines[#lines + 1] = ("   |cffb0a890%s|r - %s; %s."):format(a.name, a.what, a.combo)
-    end
-    if #rest == 0 then lines[#lines + 1] = "   " .. table.concat(have, "    ") end
-    return table.concat(lines, "\n")
+    local names = table.concat(rest, ", ")
+    if #names > 60 then names = names:sub(1, 57):gsub(",?%s*$", "") .. "..." end
+    return ("Psst - more in the YippYapp family: |cffb0a890%s|r."):format(names)
 end
 LIB.WelcomePsstText = PsstText  -- the YippYapp settings page shows the same list
 
 -- ---------------------------------------------------------------------------
--- The window
+-- The window: a home page with one card per addon, and the addon pages behind it
 -- ---------------------------------------------------------------------------
-local Select, Close
+local Select, Close, ShowHome, ShowSettings, OpenAddon
 
 -- A page's own emblem; without one, its launcher's white line icon, tinted like on the launcher.
 local function SetIcon(tex, p)
@@ -169,55 +172,433 @@ local function SetIcon(tex, p)
     tex:SetVertexColor(0.92, 0.88, 0.80, 0.92)
 end
 
-local TAB_H, TAB_GAP, TAB_ICON = 37, 5, 16
-local TAB_PAD = 20   -- on each side of the icon and label; squeezed when many tabs must fit
+-- One line about what an addon does: its own subtitle, else the family catalogue.
+--- Open an addon the way the family agreed: its own main window (onOpen, else its launcher click),
+--- and when it has none, its settings. Never a what's-new page - those are only reached from inside
+--- this window. Used by the minimap row, the cards and the addons themselves.
+function LIB.OpenAddon(id)
+    local p = pages[id]
+    local hasPanel = LIB.optionsPanels and LIB.optionsPanels[id]
+    local run = p and p.onOpen
+    if not run then
+        local e = LIB.launcherEntries and LIB.launcherEntries[(p and p.launcher) or id]
+        run = e and e.onClick and function() e.onClick("LeftButton") end
+    end
+    if not run then
+        -- No main window: its settings are the sensible landing place.
+        if hasPanel and LIB.OpenAddonSettings then return LIB.OpenAddonSettings(id) end
+        return Select(id)
+    end
+    if win then win:Hide() end
+    local ok, err = pcall(run)
+    if not ok then LIB.Debug("open %s: %s", tostring(id), tostring(err)) end
+    -- Enforcement: if the addon's own action just put us on a what's-new page, that isn't where a
+    -- minimap click belongs. Send it to that addon's settings instead.
+    if win and win:IsShown() and win.mode == "page" and hasPanel and LIB.OpenAddonSettings then
+        LIB.OpenAddonSettings(id)
+    end
+end
+OpenAddon = LIB.OpenAddon
 
-local function MakeTab(parent)
-    local b = CreateFrame("Button", nil, parent, "MinimalTabTemplate")
-    b:SetHeight(TAB_H)
-    -- The label sits in the middle of the tab, with the addon's line icon in front of it.
-    b.Text:ClearAllPoints()
-    b.Text:SetPoint("CENTER", b, "CENTER", (TAB_ICON + TAB_GAP) / 2, 0)
-    local icon = b:CreateTexture(nil, "OVERLAY")
-    icon:SetSize(TAB_ICON, TAB_ICON)
-    icon:SetPoint("RIGHT", b.Text, "LEFT", -TAB_GAP, 0)
-    icon:SetVertexColor(0.92, 0.88, 0.80, 0.92)
-    b.icon = icon
-    b:SetScript("OnClick", function(self) Select(self.id) end)
+local function Blurb(p)
+    if p.blurb and p.blurb ~= "" then return p.blurb end
+    if p.subtitle and p.subtitle ~= "" then return p.subtitle end
+    for _, a in ipairs(CATALOG) do
+        if a.name == p.id then return a.what:sub(1, 1):upper() .. a.what:sub(2) .. "." end
+    end
+    return ""
+end
+
+-- Nothing to set up while the client hasn't loaded the saved settings: we can't know what the
+-- player has already done, so we never badge, nag or open for setup in that state.
+local function SetupKnown()
+    return not (LIB.SavedVariablesLoaded and not LIB.SavedVariablesLoaded())
+end
+
+-- The action to offer, for the badge and the button: a string, or a function so an addon with
+-- several setup states can name the matching one ("Join a guild" / "Open your Blacksmithing window").
+local function SetupLabel(p)
+    local label = p.setupLabel
+    if type(label) == "function" then
+        local ok, text = pcall(label)
+        label = ok and text or nil
+    end
+    return label or "Set up"
+end
+
+local function SetupReason(p)
+    if not SetupKnown() or not NeedsSetup(p) then return nil end
+    local reason = p.reason or p.setupReason
+    if type(reason) == "function" then
+        local ok, text = pcall(reason)
+        reason = ok and text or nil
+    end
+    return reason or "needs setting up"
+end
+
+-- Sizes. The addon pages keep the width they were drawn for, so the window is wide enough for the
+-- page plus the sidebar beside it.
+local PAGE_W = W - 48
+local SIDEBAR_W = 168
+local WIN_W = 24 + SIDEBAR_W + 12 + PAGE_W + 24
+local BANNER_H, BANNER_GAP = 52, 10
+local DISCLAIMER_H = 30   -- the line about Forever forgetting settings, under the banner
+local TOTAL_H = H + BANNER_H + BANNER_GAP
+local CONTENT_TOP = -38       -- below the title bar
+local PAGE_TOP = -64          -- below the back button on an addon page
+local BOTTOM_BAR = 46         -- the button row along the bottom
+local CARD_W, CARD_MIN_H, CARD_GAP = 228, 74, 12
+local HOME_MIN_H = 150   -- the card area's own height, before it grows with the cards
+
+-- CurseForge's search for "yippyapp" in WoW addons, filtered to the Forever game version (88568):
+-- every YippYapp addon in one list, to pick one to report a bug or comment on.
+local CURSEFORGE_URL = "https://www.curseforge.com/wow/search?class=addons&search=yippyapp&gameVersionTypeId=88568"
+
+StaticPopupDialogs["LIBFOREVER_YIPPYAPP_LINK"] = {
+    text = "All YippYapp addons on CurseForge\nCopy the link below, then pick one to report a bug or comment.",
+    button1 = CLOSE,
+    hasEditBox = true,
+    editBoxWidth = 360,
+    OnShow = function(self)
+        local eb = self.EditBox or self.editBox  -- the field name differs between client builds
+        if not eb then return end
+        eb:SetText(CURSEFORGE_URL)
+        eb:HighlightText()
+        eb:SetFocus()
+    end,
+    EditBoxOnEnterPressed = function(self) self:GetParent():Hide() end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+    timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+}
+
+local function ShowCurseForge()
+    StaticPopup_Show("LIBFOREVER_YIPPYAPP_LINK")
+end
+
+-- An unnamed scroll frame doesn't expose its scroll bar by name: find the slider among its children,
+-- and hide it (with its arrows) when everything fits, so no stray buttons float over the page.
+local function ScrollBarOf(scroll)
+    if scroll.libForeverBar then return scroll.libForeverBar end
+    for _, child in ipairs({ scroll:GetChildren() }) do
+        if child.IsObjectType and child:IsObjectType("Slider") then
+            scroll.libForeverBar = child
+            return child
+        end
+    end
+end
+
+local function FitScroll(scroll, host)
+    local bar = ScrollBarOf(scroll)
+    if not bar then return end
+    local needed = (host:GetHeight() or 0) > (scroll:GetHeight() or 0) + 1
+    bar:SetShown(needed)
+    if not needed then scroll:SetVerticalScroll(0) end
+end
+
+local function Box(parent, gold)
+    local f = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    f:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 14,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    f:SetBackdropColor(0.04, 0.03, 0.02, gold and 0.95 or 0.55)
+    f:SetBackdropBorderColor(gold and 1 or 0.62, gold and 0.82 or 0.56, gold and 0.30 or 0.44, 1)
+    return f
+end
+
+-- The beta banner on the home page: actively developed, and reports and comments help.
+local function BuildBanner(parent, width)
+    local b = Box(parent, true)
+    b:SetSize(width, BANNER_H)
+    local star = b:CreateTexture(nil, "ARTWORK")
+    star:SetSize(34, 34)
+    star:SetPoint("LEFT", 10, 0)
+    if LIB.mediaPath then star:SetTexture(LIB.mediaPath .. "yippyapp") end
+    local button = CreateFrame("Button", nil, b, "UIPanelButtonTemplate")
+    button:SetSize(120, 24)
+    button:SetPoint("RIGHT", -10, 0)
+    button:SetText("CurseForge")
+    button:SetScript("OnClick", ShowCurseForge)
+    local title = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", star, "TOPRIGHT", 10, 1)
+    title:SetPoint("RIGHT", button, "LEFT", -12, 0)
+    title:SetJustifyH("LEFT")
+    title:SetText("Actively developed during the Forever beta")
+    local text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+    text:SetPoint("RIGHT", button, "LEFT", -12, 0)
+    text:SetJustifyH("LEFT")
+    text:SetText("We're improving every YippYapp addon. Found a bug or have an idea? "
+        .. "Every report and comment on |cffffd100CurseForge|r helps a lot!")
     return b
 end
 
--- The template's art doesn't fill the whole button (and the selected tab's art is a different height),
--- so "centre of the button" reads high. Centre the label on the visible art instead, measured after
--- layout; run again after every selection change, since the template can re-anchor its Text then.
-local function CentreTabText(b)
-    local bt, bb = b:GetTop(), b:GetBottom()
-    if not bt or not bb then return end
-    local top, bottom
-    for _, r in ipairs({ b:GetRegions() }) do
-        if r ~= b.icon and r.IsObjectType and r:IsObjectType("Texture") and r:IsShown()
-            and r:GetDrawLayer() ~= "HIGHLIGHT" then
-            local t, bo = r:GetTop(), r:GetBottom()
-            if t and bo and t > bo then
-                top = top and math.max(top, t) or t
-                bottom = bottom and math.min(bottom, bo) or bo
-            end
+-- Shown once to everyone after an update that brings a new banner message: raise NOTICE then.
+-- Stored in each addon's own saved table (welcomeNotice), like "seen".
+local NOTICE = 1
+
+-- Fail safe: the window opens by itself only when NO saved table says the message has been seen.
+-- One table that can't be read or written (a per-character table on a fresh alt, an addon that
+-- registers later, or Forever losing saved variables) must never bring the window back every reload.
+local function NoticePending()
+    if LIB.welcomeNoticeMarked then return false end
+    local any = false
+    for _, p in pairs(pages) do
+        if p.store then
+            any = true
+            if (tonumber(p.store.welcomeNotice) or 0) >= NOTICE then return false end
         end
     end
-    local dy = top and ((top + bottom) / 2 - (bt + bb) / 2) or 0
-    b.Text:ClearAllPoints()
-    b.Text:SetPoint("CENTER", b, "CENTER", (TAB_ICON + TAB_GAP) / 2, dy)
+    return any
 end
 
-local function CentreTabs()
-    if not win then return end
-    for _, b in ipairs(win.tabs) do if b:IsShown() then CentreTabText(b) end end
+local function MarkNoticeSeen()
+    LIB.welcomeNoticeMarked = true   -- also covers addons that register later this session
+    -- Saved variables that never loaded: remember it for this session only, don't write.
+    if LIB.SavedVariablesLoaded and not LIB.SavedVariablesLoaded() then return end
+    for _, p in pairs(pages) do
+        if p.store then p.store.welcomeNotice = NOTICE end
+    end
 end
 
+-- ---------------------------------------------------------------------------
+-- Cards on the home page
+-- ---------------------------------------------------------------------------
+local function CardFor(i)
+    local card = win.cards[i]
+    if card then return card end
+    card = Box(win.cardHost)
+    card.icon = card:CreateTexture(nil, "ARTWORK")
+    card.name = card:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    card.name:SetJustifyH("LEFT")
+    card.name:SetWordWrap(false)
+    card.badge = card:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    card.badge:SetJustifyH("RIGHT")
+    card.badge:SetTextColor(1, 0.82, 0.30)
+    card.badge:SetText("SET UP")   -- the text is replaced per addon in FillCard
+    -- Every text in a card has a width and wraps; the card grows to fit what it holds.
+    card.reason = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    card.reason:SetJustifyH("LEFT")
+    card.reason:SetTextColor(1, 0.82, 0.30)
+    card.reason:SetWordWrap(true)
+    card.blurb = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    card.blurb:SetJustifyH("LEFT")
+    card.blurb:SetWordWrap(true)
+    card.blurb:SetSpacing(2)
+    card.news = CreateFrame("Button", nil, card)
+    card.news:SetSize(80, 18)
+    card.news.text = card.news:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    card.news.text:SetAllPoints()
+    card.news.text:SetText("What's new")
+    card.news.text:SetTextColor(1, 0.82, 0.30)
+    card.news:SetScript("OnEnter", function(self) self.text:SetTextColor(1, 0.92, 0.6) end)
+    card.news:SetScript("OnLeave", function(self) self.text:SetTextColor(1, 0.82, 0.30) end)
+    card.news:SetScript("OnClick", function(self) Select(self:GetParent().id) end)
+
+    card.button = CreateFrame("Button", nil, card, "UIPanelButtonTemplate")
+    card.button:SetSize(88, 21)
+    card.button:SetScript("OnClick", function(self)
+        local parent = self:GetParent()
+        if parent.action == "addon" then OpenAddon(parent.id) else Select(parent.id) end
+    end)
+    card:EnableMouse(true)
+    card:SetScript("OnMouseUp", function(self) Select(self.id) end)
+    card:SetScript("OnEnter", function(self)
+        if not self.tooltip then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(self.title or self.id, 1, 0.82, 0.3)
+        for _, line in ipairs(self.tooltip) do GameTooltip:AddLine(line, 1, 1, 1, true) end
+        GameTooltip:Show()
+    end)
+    card:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    win.cards[i] = card
+    return card
+end
+
+local CARD_PAD, CARD_LINES = 12, 2
+
+-- Fill a card and work out how tall it needs to be. Nothing is positioned vertically yet: the row
+-- does that once it knows the tallest card in it.
+local function FillCard(card, p, full)
+    local inner = CARD_W - CARD_PAD * 2
+    local reason = SetupReason(p)
+    card.id, card.title = p.id, p.title or p.id
+    card:SetWidth(CARD_W)
+    card:SetBackdropBorderColor(reason and 1 or 0.62, reason and 0.82 or 0.56, reason and 0.30 or 0.44, 1)
+    card:SetBackdropColor(0.04, 0.03, 0.02, reason and 0.95 or 0.5)
+    card:SetAlpha(full and 1 or 0.9)
+
+    local iconSize = full and 32 or 22
+    card.icon:SetSize(iconSize, iconSize)
+    card.icon:ClearAllPoints()
+    card.icon:SetPoint("TOPLEFT", CARD_PAD, -CARD_PAD)
+    SetIcon(card.icon, p)
+
+    card.badge:ClearAllPoints()
+    card.badge:SetPoint("TOPRIGHT", -CARD_PAD, -CARD_PAD - 2)
+    card.badge:SetText(SetupLabel(p):upper())
+    card.badge:SetShown(reason ~= nil)
+
+    card.name:ClearAllPoints()
+    card.name:SetPoint("TOPLEFT", card.icon, "TOPRIGHT", 8, -1)
+    card.name:SetWidth(inner - iconSize - 8 - (reason and card.badge:GetStringWidth() + 8 or 0))
+    card.name:SetText(p.title or p.id)
+
+    local y = CARD_PAD + math.max(iconSize, 18)
+    local full_text = {}
+
+    card.reason:ClearAllPoints()
+    card.reason:SetPoint("TOPLEFT", CARD_PAD, -(y + 4))
+    card.reason:SetWidth(inner)
+    if card.reason.SetMaxLines then pcall(card.reason.SetMaxLines, card.reason, CARD_LINES) end
+    card.reason:SetText(reason or "")
+    card.reason:SetShown(reason ~= nil)
+    if reason then
+        y = y + 4 + math.min(card.reason:GetStringHeight() or 12, CARD_LINES * 13)
+        full_text[#full_text + 1] = "Needs setting up: " .. reason
+    end
+
+    local blurb = full and Blurb(p) or ""
+    card.blurb:ClearAllPoints()
+    card.blurb:SetPoint("TOPLEFT", CARD_PAD, -(y + 6))
+    card.blurb:SetWidth(inner)
+    if card.blurb.SetMaxLines then pcall(card.blurb.SetMaxLines, card.blurb, CARD_LINES) end
+    card.blurb:SetText(blurb)
+    card.blurb:SetShown(blurb ~= "")
+    if blurb ~= "" then
+        y = y + 6 + math.min(card.blurb:GetStringHeight() or 12, CARD_LINES * 13)
+        full_text[#full_text + 1] = blurb
+    end
+
+    card.button:ClearAllPoints()
+    card.button:SetPoint("BOTTOMRIGHT", -CARD_PAD, CARD_PAD - 2)
+    card.news:ClearAllPoints()
+    card.news:SetPoint("BOTTOMLEFT", CARD_PAD, CARD_PAD)
+    -- The primary button always opens the addon (the everyday thing). Setting up comes first when
+    -- it is needed, and anything unseen is a small link beside it, never the only way in.
+    card.button:SetText(reason and SetupLabel(p) or "Open")
+    card.action = reason and "page" or "addon"
+    card.news:SetShown(Unseen(p) and not reason)
+    card.tooltip = #full_text > 0 and full_text or nil
+    card:Show()
+    -- Room for the text, then the button row.
+    return math.max(CARD_MIN_H, math.ceil(y + 10 + 21 + CARD_PAD - 2))
+end
+
+local function LayoutCards()
+    local list = Sorted()
+    local width = win.cardHost:GetWidth()
+    if not width or width < CARD_W then width = WIN_W - 48 - 26 end
+    local cols = math.max(1, math.floor((width + CARD_GAP) / (CARD_W + CARD_GAP)))
+    local needy, fine = {}, {}
+    for _, p in ipairs(list) do
+        if SetupReason(p) then needy[#needy + 1] = p else fine[#fine + 1] = p end
+    end
+    for _, c in ipairs(win.cards) do c:Hide() end
+
+    local i, top = 0, 0
+    -- One group at a time: fill every card in a row, then give the whole row the tallest height.
+    local function Rows(group, full)
+        for first = 1, #group, cols do
+            local rowH, row = 0, {}
+            for n = first, math.min(first + cols - 1, #group) do
+                i = i + 1
+                local card = CardFor(i)
+                rowH = math.max(rowH, FillCard(card, group[n], full))
+                row[#row + 1] = card
+            end
+            for n, card in ipairs(row) do
+                card:SetHeight(rowH)
+                card:ClearAllPoints()
+                card:SetPoint("TOPLEFT", (n - 1) * (CARD_W + CARD_GAP), top)
+            end
+            top = top - rowH - CARD_GAP
+        end
+    end
+
+    Rows(needy, true)
+    win.allSet:ClearAllPoints()
+    win.allSet:SetPoint("TOPLEFT", 2, top - 2)
+    win.allSet:SetShown(#fine > 0 and #needy > 0)
+    if #fine > 0 and #needy > 0 then top = top - 22 end
+    Rows(fine, #needy == 0)
+
+    local height = math.max(1, -top + 6)
+    win.cardHost:SetHeight(height)
+    return height
+end
+
+-- ---------------------------------------------------------------------------
+-- The sidebar on an addon page: hop between addons without going home first
+-- ---------------------------------------------------------------------------
+local function SideButton(i)
+    local b = win.sideButtons[i]
+    if b then return b end
+    b = CreateFrame("Button", nil, win.sideHost)
+    b:SetSize(SIDEBAR_W - 26, 26)
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetSize(18, 18)
+    b.icon:SetPoint("LEFT", 6, 0)
+    b.name = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    b.name:SetPoint("LEFT", b.icon, "RIGHT", 6, 0)
+    b.name:SetPoint("RIGHT", -4, 0)
+    b.name:SetJustifyH("LEFT")
+    local hl = b:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 0.82, 0.30, 0.12)
+    b:SetScript("OnClick", function(self)
+        if self.kind == "settings" then
+            ShowSettings(self.id ~= "_shared" and self.id or nil)
+        else
+            Select(self.id)
+        end
+    end)
+    win.sideButtons[i] = b
+    return b
+end
+
+-- kind = "pages" (the addons' welcome pages) or "settings" (YippYapp + the addons' own panels).
+local function LayoutSidebar(kind, currentId)
+    local rows = {}
+    if kind == "settings" then
+        rows[1] = { id = "_shared", name = "YippYapp", shared = true }
+        for _, entry in ipairs(LIB.OptionsPanels and LIB.OptionsPanels() or {}) do
+            rows[#rows + 1] = { id = entry.id, name = entry.name, page = pages[entry.id] }
+        end
+    else
+        for _, p in ipairs(Sorted()) do rows[#rows + 1] = { id = p.id, name = p.title or p.id, page = p } end
+    end
+    for _, b in ipairs(win.sideButtons) do b:Hide() end
+    for i, row in ipairs(rows) do
+        local b = SideButton(i)
+        b.id, b.kind = row.id, kind
+        if row.shared then
+            b.icon:SetTexture(LIB.mediaPath and (LIB.mediaPath .. "yippyapp"))
+            b.icon:SetVertexColor(1, 1, 1, 1)
+        elseif row.page then
+            SetIcon(b.icon, row.page)
+        else
+            b.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+        end
+        b.name:SetText(row.name)
+        local current = row.id == currentId
+        b.name:SetTextColor(current and 1 or 0.85, current and 0.82 or 0.85, current and 0.30 or 0.85)
+        b:ClearAllPoints()
+        b:SetPoint("TOPLEFT", 0, -(i - 1) * 28)
+        b:Show()
+    end
+    win.sideHost:SetHeight(math.max(1, #rows * 28))
+    return #rows
+end
+
+-- ---------------------------------------------------------------------------
+-- Building the window
+-- ---------------------------------------------------------------------------
 local function Build()
     win = CreateFrame("Frame", "LibForeverWelcome", UIParent, "SettingsFrameTemplate")
     LIB.welcomeFrame = win
-    win:SetSize(W, H)
+    win:SetSize(WIN_W, TOTAL_H)
     win:SetPoint("CENTER", 0, 40)
     win:Hide()
     local bg = win:CreateTexture(nil, "BACKGROUND")
@@ -240,16 +621,90 @@ local function Build()
         tinsert(UISpecialFrames, "LibForeverWelcome")
     end
 
-    win.tabs = {}
-    win.divider = win:CreateTexture(nil, "ARTWORK")
-    win.divider:SetAtlas("Options_HorizontalDivider")
-    win.divider:SetHeight(1)
+    -- Home: the banner, then a card per addon in a scrolling grid.
+    win.cards, win.sideButtons = {}, {}
+    win.home = CreateFrame("Frame", nil, win)
+    win.home:SetPoint("TOPLEFT", 24, CONTENT_TOP)
+    win.home:SetPoint("BOTTOMRIGHT", win, "BOTTOMRIGHT", -24, BOTTOM_BAR)
+    win.banner = BuildBanner(win.home, WIN_W - 48)
+    win.banner:SetPoint("TOPLEFT", 0, 0)
+    -- People think the addons are broken when Forever forgets their settings, so say it here too.
+    win.disclaimer = win.home:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    win.disclaimer:SetPoint("TOPLEFT", 2, -(BANNER_H + 8))
+    win.disclaimer:SetPoint("RIGHT", win.home, "RIGHT", -2, 0)
+    win.disclaimer:SetJustifyH("LEFT")
+    win.disclaimer:SetSpacing(2)
+    win.disclaimer:SetText("|cffffd100Note:|r WoW: Forever currently forgets addon settings when you "
+        .. "restart the game - a known client bug, not these addons. Your settings may look reset.")
+
+    local cardScroll = CreateFrame("ScrollFrame", nil, win.home, "UIPanelScrollFrameTemplate")
+    win.cardScroll = cardScroll
+    cardScroll:SetPoint("TOPLEFT", 0, -(BANNER_H + BANNER_GAP + DISCLAIMER_H))
+    cardScroll:SetPoint("BOTTOMRIGHT", -26, 0)
+    win.cardHost = CreateFrame("Frame", nil, cardScroll)
+    win.cardHost:SetSize(WIN_W - 48 - 26, 10)
+    cardScroll:SetScrollChild(win.cardHost)
+    cardScroll:SetScript("OnSizeChanged", function(_, w)
+        if w and w > 0 then win.cardHost:SetWidth(w) LayoutCards() end
+    end)
+    win.allSet = win.cardHost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    win.allSet:SetText("All set")
+    win.allSet:SetTextColor(0.75, 0.72, 0.66)
+
+    -- An addon page: a back button, the sidebar, and the page itself at its own size.
+    win.back = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+    win.back:SetSize(110, 22)
+    win.back:SetPoint("TOPLEFT", 24, CONTENT_TOP + 4)
+    win.back:SetText("< All addons")
+    win.back:SetScript("OnClick", function() ShowHome() end)
+
+    -- The settings wheel in the corner of an addon page: straight to that addon's settings.
+    win.gear = CreateFrame("Button", nil, win)
+    win.gear:SetSize(22, 22)
+    win.gear:SetPoint("TOPRIGHT", -46, CONTENT_TOP + 2)
+    win.gear:SetNormalTexture("Interface\\Buttons\\UI-OptionsButton")
+    win.gear:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+    win.gear:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Settings", 1, 0.82, 0.3)
+        GameTooltip:Show()
+    end)
+    win.gear:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    win.gear:SetScript("OnClick", function() ShowSettings(win.current) end)
+    win.gear:Hide()
+
+    win.side = CreateFrame("Frame", nil, win)
+    win.side:SetPoint("TOPLEFT", 24, PAGE_TOP)
+    win.side:SetPoint("BOTTOMLEFT", 24, BOTTOM_BAR)
+    win.side:SetWidth(SIDEBAR_W)
+    local sideScroll = CreateFrame("ScrollFrame", nil, win.side, "UIPanelScrollFrameTemplate")
+    win.sideScroll = sideScroll
+    sideScroll:SetPoint("TOPLEFT", 0, 0)
+    sideScroll:SetPoint("BOTTOMRIGHT", -24, 0)
+    win.sideHost = CreateFrame("Frame", nil, sideScroll)
+    win.sideHost:SetSize(SIDEBAR_W - 26, 10)
+    sideScroll:SetScrollChild(win.sideHost)
+
+    -- Where an addon's own settings panel (or the shared settings) is hosted.
+    win.settingsHost = CreateFrame("Frame", nil, win)
+    win.settingsHost:SetPoint("TOPLEFT", 24 + SIDEBAR_W + 12, PAGE_TOP)
+    win.settingsHost:SetSize(PAGE_W, TOTAL_H + PAGE_TOP - BOTTOM_BAR - 8)
+    win.settingsHost:Hide()
+
+    -- A thin line so the sidebar and the content read as two areas.
+    win.sideDivider = win:CreateTexture(nil, "ARTWORK")
+    win.sideDivider:SetColorTexture(0.55, 0.50, 0.42, 0.5)
+    win.sideDivider:SetWidth(1)
+    win.sideDivider:SetPoint("TOPLEFT", 24 + SIDEBAR_W + 4, PAGE_TOP + 4)
+    win.sideDivider:SetPoint("BOTTOMLEFT", win, "BOTTOMLEFT", 24 + SIDEBAR_W + 4, BOTTOM_BAR + 6)
+    win.sideDivider:Hide()
 
     win.body = CreateFrame("Frame", nil, win)
+    win.body:SetPoint("TOPLEFT", 24 + SIDEBAR_W + 12, PAGE_TOP)
+    win.body:SetSize(PAGE_W, TOTAL_H + PAGE_TOP - BOTTOM_BAR - 8)
     win.icon = win.body:CreateTexture(nil, "ARTWORK")
     win.icon:SetSize(32, 32)
     win.icon:SetPoint("TOPLEFT", 0, 0)
-    win.icon:SetVertexColor(0.92, 0.88, 0.80, 0.92)
     win.heading = win.body:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     win.heading:SetPoint("TOPLEFT", win.icon, "TOPRIGHT", 10, -1)
     win.subtitle = win.body:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -258,68 +713,130 @@ local function Build()
     win.subtitle:SetJustifyH("LEFT")
     win.subtitle:SetWordWrap(false)
 
+    -- The bottom row, on both views: where the shared settings are, and Done.
     win.done = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
     win.done:SetSize(96, 22)
-    win.done:SetPoint("BOTTOMRIGHT", -16, 16)
-    win.done:SetScript("OnClick", function()
-        -- Walk through the tabs not looked at yet, then close.
-        for _, id in ipairs(shown) do
-            if not viewed[id] then Select(id) return end
-        end
-        win:Hide()
+    win.done:SetPoint("BOTTOMRIGHT", -16, 14)
+    win.done:SetText(DONE or "Done")
+    win.done:SetScript("OnClick", function() win:Hide() end)
+
+    -- Buy me a coffee lives in the window's footer, once, not inside a settings panel.
+    win.coffee = CreateFrame("Button", nil, win)
+    win.coffee:SetSize(22, 22)
+    local logo = win.coffee:CreateTexture(nil, "ARTWORK")
+    logo:SetAllPoints()
+    if LIB.mediaPath then logo:SetTexture(LIB.mediaPath .. "bmc-logo") end
+    logo:SetAlpha(0.75)
+    win.coffee:SetScript("OnEnter", function(self)
+        logo:SetAlpha(1)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Buy me a coffee", 1, 0.85, 0.2)
+        GameTooltip:AddLine("Click to copy the link.", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    win.coffee:SetScript("OnLeave", function() logo:SetAlpha(0.75) GameTooltip:Hide() end)
+    win.coffee:SetScript("OnClick", function()
+        if LIB.ShowCoffeePopup then LIB.ShowCoffeePopup() end
+    end)
+
+    win.settingsButton = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+    win.settingsButton:SetSize(150, 22)
+    win.settingsButton:SetPoint("RIGHT", win.done, "LEFT", -8, 0)
+    win.coffee:SetPoint("RIGHT", win.settingsButton, "LEFT", -12, 0)
+    win.settingsButton:SetText("YippYapp settings...")
+    win.settingsButton:SetScript("OnClick", function()
+        if LIB.OpenYippYappSettings then LIB.OpenYippYappSettings() end
     end)
 
     win.psst = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    win.psst:SetPoint("BOTTOMLEFT", 24, 18)
-    win.psst:SetWidth(W - 48 - 110)
+    win.psst:SetPoint("BOTTOMLEFT", 24, 14)
+    win.psst:SetPoint("RIGHT", win.coffee, "LEFT", -12, 0)
     win.psst:SetJustifyH("LEFT")
-    win.psst:SetSpacing(2)
+    win.psst:SetWordWrap(false)   -- one line, always: it is cut short rather than wrapping
     win.psstRule = win:CreateTexture(nil, "ARTWORK")
     win.psstRule:SetAtlas("Options_HorizontalDivider")
     win.psstRule:SetHeight(1)
-    win.psstRule:SetPoint("BOTTOMLEFT", win.psst, "TOPLEFT", -6, 8)
+    win.psstRule:SetPoint("BOTTOMLEFT", 18, BOTTOM_BAR + 2)
     win.psstRule:SetPoint("RIGHT", win, "RIGHT", -20, 0)
-
-    -- A fixed line on every page: the shared settings are in one place for all the addons.
-    win.shared = CreateFrame("Frame", nil, win)
-    win.shared:SetSize(W - 48, SHARED_H)
-    win.shared:SetPoint("BOTTOMLEFT", win.psstRule, "TOPLEFT", 6, 6)
-    local sharedText = win.shared:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    sharedText:SetPoint("LEFT", 0, 0)
-    sharedText:SetWidth(W - 48 - 160)
-    sharedText:SetJustifyH("LEFT")
-    sharedText:SetText("The minimap button, the launcher and other settings for all YippYapp addons are in "
-        .. "|cffffd100Options > AddOns > YippYapp|r (or |cffffd100/yippyapp settings|r).")
-    local sharedButton = CreateFrame("Button", nil, win.shared, "UIPanelButtonTemplate")
-    sharedButton:SetSize(150, 22)
-    sharedButton:SetPoint("RIGHT", 0, 0)
-    sharedButton:SetText("YippYapp settings...")
-    sharedButton:SetScript("OnClick", function()
-        if LIB.OpenYippYappSettings then LIB.OpenYippYappSettings() end
-    end)
 
     -- HookScript: RegisterWindow already hooked OnHide for Escape; SetScript would drop that.
     win:HookScript("OnHide", function() Close() end)
 end
 
-local function UpdateDone()
-    local left = false
-    for _, id in ipairs(shown) do if not viewed[id] then left = true end end
-    win.done:SetText(left and "Next" or (DONE or "Done"))
+-- ---------------------------------------------------------------------------
+-- Showing the two views
+-- ---------------------------------------------------------------------------
+local function Prepare()
+    if not win then Build() end
+    win.psst:SetText(PsstText(#Sorted() == 1 and (Sorted()[1].title or Sorted()[1].id) or nil))
+    -- Opened from the Settings panel: show above it rather than closing it (closing Blizzard's
+    -- Settings from addon code is forbidden; see Settings.lua).
+    local overSettings = SettingsPanel and SettingsPanel:IsShown()
+    win:SetFrameStrata(overSettings and "FULLSCREEN_DIALOG" or "HIGH")
+    win:Show()
+    win:Raise()
 end
 
+function ShowHome()
+    Prepare()
+    homeShown = true
+    win.mode = "home"
+    win.settingsButton:Show()
+    if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText("YippYapp") end
+    win.home:Show()
+    win.sideDivider:Hide()
+    win.back:Hide()
+    win.gear:Hide()
+    win.side:Hide()
+    win.body:Hide()
+    win.settingsHost:Hide()
+    for _, p in pairs(pages) do if p.page then p.page:Hide() end end
+    -- The home page is as tall as its cards need, between a floor and the full window height, so a
+    -- couple of addons don't leave a large empty area.
+    local cards = LayoutCards()
+    local chrome = -CONTENT_TOP + BANNER_H + BANNER_GAP + DISCLAIMER_H + BOTTOM_BAR + 8
+    win:SetHeight(chrome + math.max(HOME_MIN_H, math.min(cards, TOTAL_H - chrome)))
+    C_Timer.After(0, function()
+        if win and win:IsShown() and win.home:IsShown() then
+            LayoutCards()
+            FitScroll(win.cardScroll, win.cardHost)
+        end
+    end)
+end
+
+-- Shared by the addon-page view and the settings view: sidebar on the left, content on the right.
+local function ShowSplit(title, sidebarKind, currentId)
+    Prepare()
+    win.home:Hide()
+    win.back:Show()
+    win:SetHeight(TOTAL_H)
+    if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText(title) end
+    local many = LayoutSidebar(sidebarKind, currentId) > 1
+    win.side:SetShown(many)
+    win.sideDivider:SetShown(many)
+    local left = many and (24 + SIDEBAR_W + 12) or 24
+    win.body:ClearAllPoints()
+    win.body:SetPoint("TOPLEFT", left, PAGE_TOP)
+    win.settingsHost:ClearAllPoints()
+    win.settingsHost:SetPoint("TOPLEFT", left, PAGE_TOP)
+    C_Timer.After(0, function()
+        if win and win:IsShown() and win.side:IsShown() then FitScroll(win.sideScroll, win.sideHost) end
+    end)
+end
+
+-- Open one addon's page (a card, the sidebar or LIB.OpenWelcome(id) lead here).
 function Select(id)
     local p = pages[id]
-    if not p then return end
+    if not p then return ShowHome() end
+    win.mode = "page"
+    win.settingsButton:Show()
     viewed[id] = true
-    for _, b in ipairs(win.tabs) do
-        if b:IsShown() then
-            b:SetSelected(b.id == id)
-        end
-    end
-    -- Now, and once more on the next frame when the new art has its final size.
-    CentreTabs()
-    C_Timer.After(0, CentreTabs)
+    win.current = id
+    ShowSplit(p.title or p.id, "pages", id)
+    win.settingsHost:Hide()
+    win.body:Show()
+    win.gear:SetShown(LIB.optionsPanels ~= nil and LIB.optionsPanels[id] ~= nil)
+
     for _, q in pairs(pages) do if q.page then q.page:Hide() end end
     SetIcon(win.icon, p)
     win.heading:SetText(p.title or p.id)
@@ -327,106 +844,95 @@ function Select(id)
     local top = p.subtitle and p.subtitle ~= "" and -46 or -42
     local fresh = not p.page
     p.page = p.page or CreateFrame("Frame", nil, win.body)
-    -- The body is taller without tabs; keep the page filling it either way.
     p.page:ClearAllPoints()
     p.page:SetPoint("TOPLEFT", 0, top)
-    p.page:SetSize(win.body:GetWidth(), win.body:GetHeight() + top)
-    if fresh then
-        if p.build then
-            local ok, err = pcall(p.build, p.page)
-            if not ok then
-                LIB.Debug("welcome page %s: %s", id, tostring(err))
-                local fs = p.page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-                fs:SetPoint("TOPLEFT")
-                fs:SetText("This page could not be drawn.")
-            end
+    p.page:SetSize(PAGE_W, win.body:GetHeight() + top)
+    if fresh and p.build then
+        local ok, err = pcall(p.build, p.page)
+        if not ok then
+            LIB.Debug("welcome page %s: %s", id, tostring(err))
+            local fs = p.page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+            fs:SetPoint("TOPLEFT")
+            fs:SetText("This page could not be drawn.")
         end
     end
     p.page:Show()
     if p.onShow then pcall(p.onShow, p.page) end
-    UpdateDone()
 end
 
--- Opens the window with the given pages (a list of page tables) and one of them selected.
-local function Show(list, selectId)
-    if #list == 0 then return end
+-- The settings view: the shared YippYapp settings, or one addon's own panel, hosted in our window.
+function ShowSettings(id)
     if not win then Build() end
-    -- Reopened while open: settle what was looked at so far, then swap the contents.
-    if win:IsShown() then Close() end
-    wipe(shown)
-    wipe(viewed)
+    local panels = LIB.OptionsPanels and LIB.OptionsPanels() or {}
+    if id and not (LIB.optionsPanels and LIB.optionsPanels[id]) then id = nil end
+    win.mode = "settings"
+    win.settingsId = id
+    win.settingsButton:Hide()
+    ShowSplit(id and ((LIB.optionsPanels[id].name or id) .. " settings") or "YippYapp settings",
+        "settings", id or "_shared")
+    win.body:Hide()
+    win.gear:Hide()
+    win.settingsHost:Show()
 
-    local single = #list == 1
-    local title = single and ("Welcome to " .. (list[1].title or list[1].id)) or "Welcome to YippYapp"
-    if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText(title) end
-
-    for _, b in ipairs(win.tabs) do b:Hide() end
-    -- The row starts at the same left margin as the page below it, and is squeezed to fit the window.
-    local labels, textWidth = {}, 0
-    for i, p in ipairs(list) do
-        local b = win.tabs[i] or MakeTab(win)
-        win.tabs[i] = b
-        b.Text:SetText(p.title or p.id)
-        labels[i] = b.Text:GetStringWidth()
-        textWidth = textWidth + labels[i]
+    -- Hide whatever was hosted before, then show what was asked for.
+    if win.sharedSettings then win.sharedSettings:Hide() end
+    for _, entry in ipairs(panels) do
+        local shown = entry.frame.libForeverHost or entry.frame
+        if shown ~= nil then shown:Hide() end
     end
-    local room = W - 24 - 20 - (#list - 1) * TAB_GAP - #list * (TAB_ICON + TAB_GAP)
-    local pad = math.max(8, math.min(TAB_PAD, math.floor((room - textWidth) / (2 * #list))))
-    local prev
-    for i, p in ipairs(list) do
-        shown[i] = p.id
-        local b = win.tabs[i]
-        b.id = p.id
-        SetIcon(b.icon, p)
-        b:SetWidth(labels[i] + TAB_ICON + TAB_GAP + pad * 2)
-        b:ClearAllPoints()
-        if prev then b:SetPoint("TOPLEFT", prev, "TOPRIGHT", TAB_GAP, 0) else b:SetPoint("TOPLEFT", 24, -27) end
-        b:SetShown(not single)
-        prev = b
+    if not id then
+        win.sharedSettings = win.sharedSettings or (LIB.BuildYippYappSettings and LIB.BuildYippYappSettings(win.settingsHost))
+        if win.sharedSettings then
+            win.sharedSettings:Show()
+            if win.sharedSettings.Refresh then win.sharedSettings:Refresh() end
+        end
+        return
     end
-
-    local bodyTop = single and -38 or -74
-    win.divider:SetShown(not single)
-    win.divider:ClearAllPoints()
-    win.divider:SetPoint("TOPLEFT", 18, -64)
-    win.divider:SetPoint("TOPRIGHT", -20, -64)
-
-    -- With only one of our addons installed, the window is simply that addon's own welcome.
-    local onlyOne = #Sorted() == 1 and (list[1].title or list[1].id) or nil
-    win.psst:SetText(PsstText(onlyOne))
-    local psstH = win.psst:GetStringHeight() or 60
-    win.body:ClearAllPoints()
-    win.body:SetPoint("TOPLEFT", 24, bodyTop)
-    win.body:SetSize(W - 48, H + bodyTop - (18 + psstH + 22 + SHARED_H + 6))
-
-    -- Opened from the Settings panel: show above it rather than closing it (closing Blizzard's
-    -- Settings from addon code is forbidden; see Settings.lua).
-    local overSettings = SettingsPanel and SettingsPanel:IsShown()
-    win:SetFrameStrata(overSettings and "FULLSCREEN_DIALOG" or "HIGH")
-    win:Show()
-    win:Raise()
-    local pick = pages[selectId] and selectId or nil
-    if not pick then
-        for _, p in ipairs(list) do if Unseen(p) then pick = p.id break end end
+    local entry = LIB.optionsPanels[id]
+    local shown = entry.frame.libForeverHost
+    if not shown then
+        -- Taller than the room: the lib's scroll wrapper. Otherwise the panel itself.
+        local room = win.settingsHost:GetHeight()
+        if entry.height and entry.height > room and LIB.PanelScroller then
+            shown = LIB.PanelScroller(entry.frame, entry.height)
+        else
+            shown = entry.frame
+        end
+        if LIB.PanelRefreshHook then LIB.PanelRefreshHook(shown, entry.frame) end
+        entry.frame.libForeverHost = shown
+        shown:SetParent(win.settingsHost)
     end
-    Select(pick or list[1].id)
+    shown:ClearAllPoints()
+    shown:SetPoint("TOPLEFT", 0, 0)
+    shown:SetSize(PAGE_W, win.settingsHost:GetHeight())
+    shown:Show()
 end
 
--- Closing marks every page that was actually shown as seen.
+-- Closing marks every page that was looked at as seen, and the banner's message as read.
 function Close()
     for id in pairs(viewed) do
         local p = pages[id]
         if p then SeenTable(p)[id] = p.version or 1 end
     end
+    if homeShown or next(viewed) then MarkNoticeSeen() end
+    homeShown = false
     wipe(viewed)
 end
 
--- id may be a page id or a launcher entry id.
+--- Open the window on its settings view (id: that addon's own settings).
+function LIB.OpenWelcomeSettings(id)
+    if not win then Build() end
+    ShowSettings(id)
+end
+
+--- Open the window: on the home page, or straight to one addon's page.
+--- id may be a page id or a launcher entry id.
 function LIB.OpenWelcome(id)
+    if #Sorted() == 0 then return end
     if id and not pages[id] then
         for _, p in pairs(pages) do if p.launcher == id then id = p.id break end end
     end
-    Show(Sorted(), id)
+    if id and pages[id] then Select(id) else ShowHome() end
 end
 
 -- ---------------------------------------------------------------------------
@@ -438,27 +944,53 @@ local function CanAutoOpen()
     return not inInstance
 end
 
-local function Evaluate()
+-- Opening by itself is OFF while Forever loses saved variables on a cold start (client bug 69913):
+-- "seen" cannot survive that, so the window would greet everyone every session, which is worse than
+-- missing the notice. Set these back to true when the client is fixed.
+local AUTO_OPEN_FOR_SETUP = false    -- first run: open on the addons that need setting up
+local AUTO_OPEN_FOR_NOTICE = false   -- once after an update with a new banner message
+
+local Evaluate
+function Evaluate()
     if LIB.welcomeVersion ~= VERSION or not loginDone then return end
     if win and win:IsShown() then return end
-    local unseen = Sorted(Unseen)
+    -- If we can't trust what is saved, we don't know what the player has already seen or done.
+    if LIB.SavedVariablesLoaded and not LIB.SavedVariablesLoaded() then autoPending = nil return end
     local setup = false
-    for _, p in ipairs(unseen) do if NeedsSetup(p) then setup = true end end
-    if not setup then autoPending = nil return end
+    if AUTO_OPEN_FOR_SETUP and SetupKnown() then
+        for _, p in ipairs(Sorted(Unseen)) do if NeedsSetup(p) then setup = true end end
+    end
+    -- Besides setup, the window opens once after an update with a new banner message (NOTICE).
+    local notice = AUTO_OPEN_FOR_NOTICE and NoticePending()
+    if not setup and not notice then autoPending = nil return end
+    -- Only the banner message would open the window: look again a few seconds later first, in case a
+    -- saved table (and its "seen" flag) arrives late. Better to miss the notice than to nag.
+    if notice and not setup and not LIB.welcomeNoticeRechecked then
+        LIB.welcomeNoticeRechecked = true
+        LIB.Debounce("welcome", 6, Evaluate)
+        return
+    end
     if not CanAutoOpen() then autoPending = true return end
     autoPending = nil
-    Show(unseen)
+    ShowHome()
 end
+
+LIB.RegisterWelcomePage = nil  -- set below, after RegisterWelcome exists
 
 function LIB.RegisterWelcome(entry, savedTable)
     if type(entry) ~= "table" or not entry.id then return end
     entry.store = savedTable
+    -- Registered after the message was marked as seen: mark this addon too, so it doesn't bring
+    -- the window back on the next login.
+    if savedTable and LIB.welcomeNoticeMarked then savedTable.welcomeNotice = NOTICE end
     local old = pages[entry.id]
     if old and old.page then old.page:Hide() end
     pages[entry.id] = entry
     -- Registered after login (a load-on-demand addon): look again shortly.
     if loginDone then LIB.Debounce("welcome", AUTO_DELAY, Evaluate) end
 end
+
+LIB.RegisterWelcomePage = LIB.RegisterWelcome   -- the name the addons may use
 
 LIB.On("PLAYER_ENTERING_WORLD", function(isLogin, isReload)
     if LIB.welcomeVersion ~= VERSION then return end
@@ -484,7 +1016,7 @@ SlashCmdList.YIPPYAPP = function(msg)
     -- Support-only: the launcher's state per addon, for bug reports.
     if msg and msg:lower():match("^%s*debug") then
         if LIB.DebugLauncher then LIB.DebugLauncher() end
-        if LIB.DebugMinimap then LIB.DebugMinimap() end
+        if LIB.MinimapDebug then LIB.MinimapDebug() elseif LIB.DebugMinimap then LIB.DebugMinimap() end
         return
     end
     -- "/yippyapp settings": the shared YippYapp settings page.

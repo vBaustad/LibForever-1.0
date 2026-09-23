@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.3
+
+- Hardening of the guild comms: every incoming message now passes a per-sender budget (30 messages per
+  prefix per 10 seconds), so one broken or hostile client can't make our addons work without bound. What
+  it dropped shows up in `CommStats` as `OverBudget`. The tables behind that, and the list of players
+  heard on the guild channel, are capped as well.
+- New `LIB.Sanitize(text, maxLen)`: strips control characters, turns "|" into "/" so no |H link,
+  |T texture or |c colour can survive, trims and caps the length without cutting a UTF-8 character in
+  half. Everything an addon takes from another player should go through it before being stored, sent
+  or shown.
+- Performance: the launcher's two per-frame handlers stop themselves the moment the bar is hidden, and
+  the minimap and window position passes that work around Forever's reset now stop after login instead
+  of running again on every zone change.
+
+- All YippYapp settings now live in the YippYapp window, not in Blizzard's Options: opening Blizzard's
+  Options closes whatever else you had open. Options > AddOns > YippYapp keeps one button that opens the
+  window. The minimap button opens the window on left-click and its settings on right-click, and each
+  addon's page has a settings wheel.
+- A card's button now opens the addon itself, and only says "What's new" when that addon has something
+  you haven't seen. Addons that need setting up say what the action is ("Create macros", "Scan prices").
+- The welcome window no longer opens by itself at all, for now. While WoW: Forever forgets saved settings
+  on a cold start, "already seen" cannot survive, so it would greet you every session. Open it whenever you
+  like from the minimap button or /yippyapp. (In the code: AUTO_OPEN_FOR_SETUP and AUTO_OPEN_FOR_NOTICE in
+  Welcome.lua, to switch back on once the client is fixed.)
+- While the game has failed to load saved settings, nothing is flagged as needing setup either: we can't
+  know what you have already done.
+- The window says plainly that WoW: Forever currently forgets addon settings when you restart the game.
+
+- Welcome window: it now opens on a home page with a card per installed addon. Anything that still needs
+  setting up comes first, highlighted and with the reason; the rest sit under "All set". A card opens that
+  addon's page, which has a back button and a sidebar for hopping between addons. The tab row is gone, so
+  the window copes with any number of addons.
+- The home page carries a gold-on-black banner: the addons are actively developed during the Forever beta,
+  and every bug report and comment on CurseForge helps. Its button shows a link listing every YippYapp addon
+  on CurseForge, ready to copy. The window opens once after this update so everyone sees it.
+- YippYapp settings page: a "Buy me a coffee" button, and the page scrolls when the Settings window is
+  shorter than it.
+- Settings pages now always show their current values the first time they are opened.
+  LIB.RegisterOptionsPage takes an optional page height and then scrolls the page.
+
 ## 1.0.2
 
 - Addon messages go by the game's own answer: sent, or refused (for example during an encounter). Refused

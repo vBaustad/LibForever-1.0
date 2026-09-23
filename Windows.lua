@@ -33,9 +33,10 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 4
+local VERSION = 6
 if (LIB.windowsVersion or 0) >= VERSION then return end
 LIB.windowsVersion = VERSION
+LIB.windowReapplies = 0
 
 local STRATA = "HIGH"
 -- Above Blizzard's Settings panel, for windows opened from a settings page while it is open.
@@ -317,6 +318,27 @@ function LIB.RegisterWindow(f, savedTable, key)
         LIB.RaiseWindow(f)
         LIB.SyncWindowEscape()
     end
+end
+
+-- Forever can lose or apply saved positions late after a reload (it happens to other addons and to
+-- Blizzard's own frames too), so every open window's saved position is applied again after login.
+-- This only ever READS the saved table; a position is written when the player drags a window.
+function LIB.ReapplyWindowPositions()
+    if LIB.windowsVersion ~= VERSION then return end
+    -- Only around login: after that a window's own OnShow restores it (a newer copy of this file
+    -- resets the count and gets its own passes).
+    LIB.windowReapplies = (LIB.windowReapplies or 0) + 1
+    if LIB.windowReapplies > 4 then return end
+    for f, w in pairs(windows) do
+        if f:IsShown() and w.store then Restore(f) end
+    end
+end
+
+if not LIB.windowReapplyHooked then
+    LIB.windowReapplyHooked = true
+    LIB.On("PLAYER_LOGIN", function() LIB.ReapplyWindowPositions() end)
+    LIB.On("PLAYER_ENTERING_WORLD", function() LIB.ReapplyWindowPositions() end)
+    C_Timer.After(2, function() LIB.ReapplyWindowPositions() end)
 end
 
 function LIB.ResetWindowPosition(f)

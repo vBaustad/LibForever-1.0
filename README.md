@@ -51,12 +51,34 @@ LIB.RegisterWindow(myWindow, MyAddonDB, "pos")
 
 Each file's header comment documents its full API.
 
+## What a click does (the family's convention)
+
+Every YippYapp addon behaves the same way, so a player never has to remember which addon they are clicking.
+
+| Click | What opens |
+|---|---|
+| Left-click an addon's minimap icon (its own button, or its icon in the shared row) | That addon's **main window**. An addon with no main window (AutoFeed, BuffWarden) opens **its settings** in the YippYapp window. |
+| Right-click an addon's icon | **That addon's settings**, always. |
+| Left-click the YippYapp emblem (the shared button, or the last icon in the row) | The **YippYapp window** on its home page. |
+| Right-click the YippYapp emblem | The **shared YippYapp settings**. |
+| Inside the window: a card, its small "What's new" link, the sidebar | That addon's **welcome / what's-new page**. |
+
+A welcome page is never where a minimap click lands. `LIB.OpenAddon(id)` follows the rule for you (its own
+`onOpen`, else its launcher click, else its settings), and if an addon's own action does land on a
+what's-new page, the library sends it to that addon's settings instead. Your addon's own LDB `OnClick`
+should follow the same rule for players who split the buttons up.
+
 ## Rules for code that uses it
 
 - **Never close Blizzard's Settings panel from addon code:** no `SettingsPanel:Close()`, `HideUIPanel(SettingsPanel)` or
   `ToggleGameMenu()`. Closing it returns to the game menu, which calls a protected function, and from addon code that
   is blocked (`ADDON_ACTION_FORBIDDEN`). To show one of your windows from a settings page, open it above the panel
   and leave the panel open, as the welcome window does.
+- **Anything that came from another player is untrusted:** run it through `LIB.Sanitize(text, maxLen)` before
+  storing it, showing it in a tooltip or chat line, or sending it on. A name or note straight from a peer can
+  carry `|H` links, `|T` textures and `|c` colours, and a long one can bloat your saved variables. The library
+  already drops messages from a sender who floods a prefix (`CommStats` counts them as `OverBudget`), but it
+  cannot know which parts of your payload are text.
 - Don't gate addon messages on `InChatLockdown()`. That lockdown is for real chat; addon messages go out, and
   `Send` deals with a refused message itself.
 

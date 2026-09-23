@@ -10,8 +10,9 @@
 --   comm       guild addon messages: one prefix per addon, sent at once, lockdown refusals retried
 --   map        where am I, and how far away is that in yards (map sizes from the client's own data)
 --   data       shared access to generated Forever data (recipes, professions, stations)
---   store      saved-variable defaults, schema versions and ordered migrations
-local MAJOR, MINOR = "LibForever-1.0", 6
+--   store      saved-variable defaults, schema versions and ordered migrations, and whether
+--              the client loaded the saved variables at all (SavedVariablesLoaded)
+local MAJOR, MINOR = "LibForever-1.0", 8
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -108,6 +109,33 @@ function LIB.ShortName(full)
     return short
 end
 
+--- Make text from anyone else safe to store, send and show: no control characters, no UI escape
+--- codes (a "|" becomes "/", so |H links, |T textures and |c colours can't survive), trimmed, and
+--- capped. Use it on EVERYTHING that arrives from another player before storing or displaying it.
+function LIB.Sanitize(s, maxLen)
+    s = tostring(s or "")
+    s = s:gsub("%c", " "):gsub("|", "/")
+    s = strtrim(s)
+    maxLen = tonumber(maxLen) or 128
+    if #s > maxLen then
+        s = s:sub(1, maxLen)
+        -- Never cut a UTF-8 character in half: step back over the trailing bytes, and if that last
+        -- character didn't fit whole, drop it.
+        local i = #s
+        while i > 0 do
+            local b = s:byte(i)
+            if b < 0x80 or b >= 0xC0 then break end
+            i = i - 1
+        end
+        local lead = i > 0 and s:byte(i) or 0
+        if lead >= 0xC0 then
+            local need = (lead >= 0xF0 and 4) or (lead >= 0xE0 and 3) or 2
+            if #s - i + 1 < need then s = s:sub(1, i - 1) end
+        end
+    end
+    return s
+end
+
 --- The name the server accepts for a whisper (chat or addon): plain for someone on our own realm,
 --- because "Name-OurRealm" answers "No player named ... is currently playing". Other realms keep
 --- their suffix. Storage and comparisons still use the full "Name-Realm" form.
@@ -162,6 +190,7 @@ end
 --- Lenient: in the roster, OR heard from on the GUILD addon channel this session (only guild
 --- members can reach us there). Use this to accept whispers: a partial roster must not drop replies.
 LIB.guildHeard = LIB.guildHeard or {}
+LIB.guildHeardCount = LIB.guildHeardCount or 0
 function LIB.KnownGuildie(full)
     return full ~= nil and (LIB.roster[full] ~= nil or LIB.guildHeard[full] == true)
 end
@@ -203,6 +232,43 @@ end
 -- ---------------------------------------------------------------------------
 LIB.comms = LIB.comms or {}
 LIB.commStats = LIB.commStats or {}   -- [prefix] = { sent, received, refused = { [reason] = n } }
+-- A hostile or broken client must not be able to make us work without bound: each sender gets a
+-- budget per prefix, and anything above it is dropped before the addon ever sees it.
+local BUDGET, BUDGET_WINDOW = 30, 10   -- messages per sender per prefix, per this many seconds
+local heard = LIB.commHeard or {}      -- [prefix][sender] = { n, since }
+LIB.commHeard = heard
+
+-- The budget table itself must not grow all session either: once it holds more senders than a large
+-- guild would, everything outside the current window goes.
+local MAX_SENDERS = 300
+
+local function Prune(perPrefix, now)
+    local n = 0
+    for _ in pairs(perPrefix) do n = n + 1 end
+    if n <= MAX_SENDERS then return end
+    for who, row in pairs(perPrefix) do
+        if now - row.since > BUDGET_WINDOW then perPrefix[who] = nil end
+    end
+end
+
+local function WithinBudget(prefix, sender)
+    local now = (GetTime and GetTime()) or 0
+    local perPrefix = heard[prefix]
+    if not perPrefix then
+        perPrefix = {}
+        heard[prefix] = perPrefix
+    end
+    Prune(perPrefix, now)
+    local row = perPrefix[sender]
+    if not row or now - row.since > BUDGET_WINDOW then
+        perPrefix[sender] = { n = 1, since = now }
+        return true
+    end
+    row.n = row.n + 1
+    if row.n <= BUDGET then return true end
+    if row.n == BUDGET + 1 then LIB.Debug("%s: %s is over budget, dropping", prefix, tostring(sender)) end
+    return false
+end
 LIB.commRetry = LIB.commRetry or {}   -- messages refused by a lockdown, oldest first
 local MAX_RETRY = 20
 
@@ -250,7 +316,16 @@ function LIB.RegisterComm(prefix, onMessage)
         sender = LIB.FullName(sender)
         if not sender or sender == LIB.Me() then return end
         if dist ~= "GUILD" and dist ~= "WHISPER" then return end
-        if dist == "GUILD" then LIB.guildHeard[sender] = true end
+        if not WithinBudget(prefix, sender) then
+            local s = Stats(prefix)
+            s.refused.OverBudget = (s.refused.OverBudget or 0) + 1
+            return
+        end
+        -- Remember senders we hear on the guild channel, but never without a limit.
+        if dist == "GUILD" and LIB.guildHeardCount < 500 and not LIB.guildHeard[sender] then
+            LIB.guildHeard[sender] = true
+            LIB.guildHeardCount = LIB.guildHeardCount + 1
+        end
         if dist == "WHISPER" and not LIB.KnownGuildie(sender) then return end
         Stats(prefix).received = Stats(prefix).received + 1
         onMessage(prefix, text, dist, sender)
@@ -400,6 +475,73 @@ function LIB.PrepareDB(db, defaults, migrations, currentVersion)
     end
     db.schema = db.schema or currentVersion
     return db, true
+end
+
+-- ---------------------------------------------------------------------------
+-- Did the saved variables load at all?
+-- Forever beta (build 69913) sometimes starts without reading SavedVariables at all: the globals are
+-- nil at ADDON_LOADED and after, every addon rebuilds its defaults, and the next logout writes those
+-- over the good files. It is confirmed on Blizzard's own forums (EU 629888 / US 2353992) and hits
+-- other addons and Blizzard's frames too, so it is the client, not us.
+-- We can't recover what never loaded, but we can SAY so, and let the addons go quiet instead of
+-- publishing empty data. Each registered saved table gets a marker once per session; a table that
+-- comes back without its marker did not load.
+--   LIB.RegisterSavedTable(t)      add a table to the check (the lib adds the ones it knows)
+--   LIB.SavedVariablesLoaded()     false only when we are sure they did not load, else true
+--   LIB.Listen("SAVED_VARIABLES_EMPTY", fn)   fires once, a second or two after login
+-- ---------------------------------------------------------------------------
+LIB.savedTables = LIB.savedTables or {}
+LIB.savedVariablesState = LIB.savedVariablesState or "unknown"
+
+function LIB.RegisterSavedTable(t)
+    if type(t) ~= "table" then return end
+    for _, known in ipairs(LIB.savedTables) do if known == t then return end end
+    LIB.savedTables[#LIB.savedTables + 1] = t
+    -- Registered after the check has run: give it this session's marker too.
+    if LIB.savedVariablesState ~= "unknown" then t.yippyappSeen = time() end
+end
+
+local function AllSavedTables()
+    local list, seen = {}, {}
+    local function add(t)
+        if type(t) == "table" and not seen[t] then
+            seen[t] = true
+            list[#list + 1] = t
+        end
+    end
+    for _, t in ipairs(LIB.savedTables) do add(t) end
+    for _, t in ipairs(LIB.launcherStores or {}) do add(t) end
+    for _, b in pairs(LIB.minimapButtons or {}) do add(b.store) end
+    for _, p in pairs(LIB.welcomePages or {}) do add(p.store) end
+    return list
+end
+
+--- False only when we are sure this session started without the saved variables.
+function LIB.SavedVariablesLoaded()
+    return LIB.savedVariablesState ~= "empty"
+end
+
+local function CheckSavedVariables()
+    if LIB.savedVariablesState ~= "unknown" then return end
+    local list = AllSavedTables()
+    if #list < 2 then return end          -- too little to tell: say nothing
+    local marked = 0
+    for _, t in ipairs(list) do
+        if t.yippyappSeen then marked = marked + 1 end
+    end
+    LIB.savedVariablesState = marked > 0 and "loaded" or "empty"
+    for _, t in ipairs(list) do t.yippyappSeen = time() end
+    if LIB.savedVariablesState == "empty" then
+        -- One line only; the welcome window's own note carries the detail. A genuine first install
+        -- looks the same from in here, so the wording says "didn't load", not "you lost them".
+        print("|cffff4040YippYapp:|r your saved settings didn't load - a known Forever beta bug. "
+            .. "Restart the game fully to get them back.")
+        LIB.Fire("SAVED_VARIABLES_EMPTY")
+    end
+end
+
+if firstLoad then
+    LIB.On("PLAYER_LOGIN", function() C_Timer.After(5, CheckSavedVariables) end)
 end
 
 -- ---------------------------------------------------------------------------

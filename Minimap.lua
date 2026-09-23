@@ -3,11 +3,11 @@
 -- LibForever doesn't embed either library: each addon ships them in its own Libs\ and this helper
 -- looks them up when it is called. Without them it returns false and the addon carries on.
 --
--- By default all YippYapp addons share ONE minimap button (LibDBIcon id "YippYapp"). Clicking it opens
--- a small row with each addon's own button; those behave exactly like the addon's button (same clicks,
--- same tooltip). With a single addon the shared button simply is that addon's button. Every addon keeps
--- its own LDB object, so broker displays (Titan, ChocolateBar, ElvUI) still list each one; only the
--- LibDBIcon minimap view is grouped. Ungrouped, each addon gets its own minimap button as before.
+-- By default all YippYapp addons share ONE minimap button (LibDBIcon id "YippYapp"): left-click opens
+-- a row with one icon per addon (click one to open that addon; the last icon opens the YippYapp
+-- window), and right-click opens the YippYapp settings. Every addon keeps its own LDB object, so
+-- broker displays (Titan, ChocolateBar, ElvUI) still list each one; only the LibDBIcon minimap view is
+-- grouped. Ungrouped, each addon gets its own button with its own clicks, as before.
 --
 --   LIB.RegisterMinimapButton(id, opts, savedTable) -> true/false
 --       opts = { icon, label, OnClick(frame, button), OnTooltipShow(tooltip), migrateAngle }
@@ -25,7 +25,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 4
+local VERSION = 10
 if (LIB.minimapVersion or 0) >= VERSION then return end
 LIB.minimapVersion = VERSION
 
@@ -87,10 +87,42 @@ local function Adopt(store)
 end
 
 -- ---------------------------------------------------------------------------
--- The row of addon buttons that the shared button opens
+-- The row the shared button opens: one icon per addon, plus the YippYapp window at the end.
+-- Clicking an icon opens THAT addon, which is the everyday path: two clicks from the minimap, the
+-- same as before the window existed.
 -- ---------------------------------------------------------------------------
 local SIZE, PAD, GAP = 28, 8, 6
 local flyout = LIB.minimapFlyout
+
+-- What one entry in the row does: open the addon itself (the welcome window knows each addon's own
+-- action), else its minimap click.
+local function OpenEntry(id, frame, mouse)
+    mouse = mouse or "LeftButton"
+    if id == GROUP then
+        if mouse == "RightButton" and LIB.OpenYippYappSettings then
+            LIB.OpenYippYappSettings()
+        elseif LIB.OpenWelcome then
+            LIB.OpenWelcome()
+        end
+        return
+    end
+    local e = buttons[id]
+    -- The family's convention: left-click opens the addon (its own window, or its settings when it
+    -- hasn't got one), right-click always opens that addon's settings.
+    if mouse ~= "LeftButton" then
+        if LIB.optionsPanels and LIB.optionsPanels[id] and LIB.OpenAddonSettings then
+            LIB.OpenAddonSettings(id)
+        elseif e and e.opts.OnClick then
+            e.opts.OnClick(frame, mouse)          -- its own right-click, usually its settings
+        elseif LIB.OpenAddonSettings then
+            LIB.OpenAddonSettings(id)             -- never nothing
+        end
+    elseif LIB.OpenAddon then
+        LIB.OpenAddon(id)
+    elseif e and e.opts.OnClick then
+        e.opts.OnClick(frame, mouse)
+    end
+end
 
 local function FlyoutButton(i)
     local b = flyout.buttons[i]
@@ -106,15 +138,20 @@ local function FlyoutButton(i)
     hl:SetBlendMode("ADD")
     b:SetScript("OnClick", function(self, mouse)
         flyout:Hide()
-        local e = buttons[self.id]
-        if e and e.opts.OnClick then e.opts.OnClick(self, mouse) end
+        OpenEntry(self.id, self, mouse)
     end)
     b:SetScript("OnEnter", function(self)
-        local e = buttons[self.id]
-        if not e then return end
         GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-        if e.opts.OnTooltipShow then e.opts.OnTooltipShow(GameTooltip)
-        else GameTooltip:AddLine(e.opts.label or self.id, 1, 0.82, 0.3) end
+        if self.id == GROUP then
+            GameTooltip:AddLine("YippYapp", 1, 0.82, 0.3)
+            GameTooltip:AddLine("Left-click: your addons and what's new", 1, 1, 1)
+            GameTooltip:AddLine("Right-click: YippYapp settings", 1, 1, 1)
+        else
+            local e = buttons[self.id]
+            if not e then return end
+            if e.opts.OnTooltipShow then e.opts.OnTooltipShow(GameTooltip)
+            else GameTooltip:AddLine(e.opts.label or self.id, 1, 0.82, 0.3) end
+        end
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -154,15 +191,28 @@ local function ToggleFlyout(anchor, members)
     BuildFlyout()
     if flyout:IsShown() then flyout:Hide() return end
     for _, b in ipairs(flyout.buttons) do b:Hide() end
-    for i, e in ipairs(members) do
-        local b = FlyoutButton(i)
+    local n = 0
+    for _, e in ipairs(members) do
+        n = n + 1
+        local b = FlyoutButton(n)
         b.id = e.id
         b.icon:SetTexture(e.opts.icon)
+        b.icon:SetVertexColor(1, 1, 1, 1)
         b:ClearAllPoints()
-        b:SetPoint("LEFT", PAD + (i - 1) * (SIZE + GAP), 0)
+        b:SetPoint("LEFT", PAD + (n - 1) * (SIZE + GAP), 0)
         b:Show()
     end
-    flyout:SetSize(PAD * 2 + #members * SIZE + (#members - 1) * GAP, SIZE + PAD * 2)
+    -- Last in the row: the YippYapp window itself.
+    n = n + 1
+    local last = FlyoutButton(n)
+    last.id = GROUP
+    last.icon:SetTexture(Emblem() or (members[1] and members[1].opts.icon))
+    last.icon:SetVertexColor(1, 1, 1, 1)
+    last:ClearAllPoints()
+    last:SetPoint("LEFT", PAD + (n - 1) * (SIZE + GAP), 0)
+    last:Show()
+
+    flyout:SetSize(PAD * 2 + n * SIZE + (n - 1) * GAP, SIZE + PAD * 2)
     -- Open towards the middle of the screen.
     flyout.anchor = anchor
     flyout:ClearAllPoints()
@@ -177,25 +227,26 @@ local function ToggleFlyout(anchor, members)
 end
 
 -- The shared button's handlers go through LIB, so a newer copy of this file takes them over.
+-- It is the way into the YippYapp window: left-click opens it, right-click opens it on the settings.
 function LIB.MinimapGroupClick(frame, mouse)
+    if mouse == "RightButton" then
+        if LIB.OpenYippYappSettings then LIB.OpenYippYappSettings() end
+        return
+    end
     local members = Members()
     if #members == 1 then
-        if members[1].opts.OnClick then members[1].opts.OnClick(frame, mouse) end
-    elseif #members > 1 then
-        ToggleFlyout(frame, members)
+        OpenEntry(members[1].id, frame, mouse)   -- one addon: straight there
+    else
+        ToggleFlyout(frame, members)             -- the row: one click per addon
     end
 end
 
 function LIB.MinimapGroupTooltip(tooltip)
     local members = Members()
-    if #members == 1 then
-        local o = members[1].opts
-        if o.OnTooltipShow then o.OnTooltipShow(tooltip) else tooltip:AddLine(o.label or members[1].id) end
-        return
-    end
     local emblem = Emblem()
     tooltip:AddLine((emblem and ("|T" .. emblem .. ":16:16:0:0|t ") or "") .. "YippYapp", 1, 0.82, 0.3)
-    tooltip:AddLine("Click to open your YippYapp addons.", 1, 1, 1)
+    tooltip:AddLine("Left-click: pick an addon to open", 1, 1, 1)
+    tooltip:AddLine("Right-click: YippYapp settings", 1, 1, 1)
     for _, e in ipairs(members) do tooltip:AddLine(e.opts.label or e.id, 0.8, 0.8, 0.8) end
 end
 
@@ -230,7 +281,6 @@ local function Refresh()
     elseif dbicon:IsRegistered(GROUP) then
         dbicon:Hide(GROUP)
     end
-    if flyout and (not grouped or #members < 2) then flyout:Hide() end
 
     for id, b in pairs(buttons) do
         local show = not grouped and not (b.store.minimap and b.store.minimap.hide)
@@ -279,6 +329,7 @@ function LIB.RegisterMinimapButton(id, opts, savedTable)
     -- For the diagnostics: what this addon's own button remembered when it registered.
     b.loadedPos = savedTable.minimap and savedTable.minimap.minimapPos
     Adopt(savedTable)
+    if LIB.NoteMinimapRead then LIB.NoteMinimapRead("register " .. id) end
     Refresh()
     return true
 end
@@ -317,6 +368,100 @@ function LIB.DebugMinimap()
             tostring(b.store.minimap and b.store.minimap.minimapPos), tostring(b.loadedPos),
             tostring(b.store.yippyappMinimap == shared.data), tostring(LIB.IsMinimapButtonShown(id)),
             tostring(dbicon ~= nil and dbicon:IsRegistered(id)))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Late saved variables, and a client that moves things back
+-- Forever resets saved positions after a reload for other addons and for Blizzard's own frames too,
+-- so the position is read and applied again at several points instead of only once at load: nothing
+-- here ever writes a default over a saved position. Only a drag writes (LibDBIcon does that itself).
+-- LIB.MinimapDebug() prints what was seen and when, which separates "nothing saved at load" from
+-- "we applied it and something moved it afterwards".
+-- ---------------------------------------------------------------------------
+local trace = LIB.minimapTrace or {}
+LIB.minimapTrace = trace
+
+-- Registering a sub-table of the addon's own DB (Guildhall passes its settings) is normal, and not
+-- the same as the DB having been swapped underneath us.
+local function SubTableOf(db, store)
+    for _, v in pairs(db) do if v == store then return true end end
+    return false
+end
+
+local function Note(phase)
+    local row = { phase = phase, at = (GetTime and math.floor(GetTime() * 10) / 10) or 0,
+                  shared = shared.data.minimapPos, button = nil, addons = {} }
+    local _, dbicon = Libs()
+    local button = dbicon and dbicon:GetMinimapButton(GROUP)
+    row.button = button and button.db and button.db.minimapPos
+    for id, b in pairs(buttons) do
+        local saved = rawget(_G, id .. "DB")
+        local keys = 0
+        for _ in pairs(b.store) do keys = keys + 1 end
+        row.addons[id] = {
+            keys = keys,   -- 0 means the table we were handed holds nothing at all
+            group = b.store.yippyappMinimap and b.store.yippyappMinimap.minimapPos,
+            own = b.store.minimap and b.store.minimap.minimapPos,
+            sameTable = b.store.yippyappMinimap == shared.data,
+            savedGlobal = type(saved) == "table" and saved ~= b.store and not SubTableOf(saved, b.store) or false,
+        }
+    end
+    trace[#trace + 1] = row
+    if #trace > 12 then tremove(trace, 1) end
+end
+
+-- A saved table that arrived (or was replaced) after we first read it: take the position from it,
+-- but never the other way round.
+local function AdoptLate()
+    for id, b in pairs(buttons) do
+        Adopt(b.store)
+        if shared.data.minimapPos == nil then
+            local saved = rawget(_G, id .. "DB")
+            local late = type(saved) == "table" and saved.yippyappMinimap
+            local pos = (type(late) == "table" and late.minimapPos)
+                or (type(saved) == "table" and type(saved.minimap) == "table" and saved.minimap.minimapPos)
+            if pos then shared.data.minimapPos = pos end
+        end
+    end
+end
+
+LIB.NoteMinimapRead = Note   -- the registration path notes what it saw too
+
+-- The workaround only has to cover login: after a few passes the client has done whatever it does,
+-- so it stops instead of running again on every zone change.
+local MAX_REAPPLY = 4
+LIB.minimapReapplies = 0   -- a newer copy of this file gets its own passes
+
+--- Read the saved position again and put the button back where it belongs.
+function LIB.ReapplyMinimap(phase)
+    if LIB.minimapVersion ~= VERSION then return end
+    LIB.minimapReapplies = (LIB.minimapReapplies or 0) + 1
+    if LIB.minimapReapplies > MAX_REAPPLY then return end
+    AdoptLate()
+    Note(phase or "reapply")
+    Refresh()
+end
+
+if not LIB.minimapReapplyHooked then
+    LIB.minimapReapplyHooked = true
+    LIB.On("PLAYER_LOGIN", function() LIB.ReapplyMinimap("PLAYER_LOGIN") end)
+    LIB.On("PLAYER_ENTERING_WORLD", function() LIB.ReapplyMinimap("PLAYER_ENTERING_WORLD") end)
+    C_Timer.After(2, function() LIB.ReapplyMinimap("login + 2s") end)
+end
+
+-- Support diagnostics (a hidden command): what was read, and when.
+function LIB.MinimapDebug()
+    local function out(fmt, ...) print("|cffffd100YippYapp|r " .. fmt:format(...)) end
+    LIB.DebugMinimap()
+    if #trace == 0 then out("no minimap readings yet") return end
+    for _, row in ipairs(trace) do
+        out("%s (%.1fs): shared=%s, button=%s", row.phase, row.at, tostring(row.shared), tostring(row.button))
+        for id, a in pairs(row.addons) do
+            out("   %s: keys=%s, saved group=%s, own=%s, shares the table: %s%s", id, tostring(a.keys),
+                tostring(a.group), tostring(a.own), tostring(a.sameTable),
+                a.savedGlobal and ", NOTE: <Addon>DB is another table than the one it registered" or "")
+        end
     end
 end
 
