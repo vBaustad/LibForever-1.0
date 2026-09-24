@@ -21,7 +21,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 15
+local VERSION = 16
 if (LIB.launcherVersion or 0) >= VERSION then return end
 LIB.launcherVersion = VERSION
 
@@ -154,7 +154,6 @@ local function Layout()
         notch:SetPoint("RIGHT", UIParent, "BOTTOMRIGHT", TUCK, off * sh)
     end
 end
-LIB.LayoutLauncher = Layout
 
 -- Dragging never lets the bar float: it slides along its edge under the cursor and only jumps
 -- to another edge once the cursor is clearly closer to that one.

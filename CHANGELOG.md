@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.4
+
+- New: `/yippyapp test` - one command that says whether anything is broken. Each addon can
+  register its own test (LIB.RegisterSelfTest), and on top of those the runner opens and closes every
+  window and settings page, draws every welcome card and page, and fires every launcher tooltip. It
+  never runs in combat and puts back everything it touched, including the "seen" flags.
+- Fixed: opening one addon's page before the window had ever been opened this session threw an error
+  instead of opening it (an addon's own "Welcome" button could land there).
+- Housekeeping before the next release: the three views in the welcome window now switch through one
+  place, so no view can leave another one's frames on screen, and the two switches that turn
+  opening-by-itself back on sit next to the machinery they control.
+- Removed what nothing reads any more: LIB.frames, LIB.welcomeCatalog, LIB.LayoutLauncher,
+  LIB.RefreshMinimapButtons, and LIB.RegisterSettingsPage with the table behind it (settings pages
+  are registered with RegisterOptionsPage). The no-op LIB.RequestRoster and LIB.SetLauncherBadge stay:
+  addon versions already on CurseForge call them, and the newest embedded copy of the library is the
+  one that answers.
+- The welcome window no longer writes a "notice seen" flag while it never opens by itself.
+- README: the provider contract between our addons (ProvideData/GetData, Keep and Tier) is written down.
+- The warning about settings that didn't load no longer tells you to restart the game to get them
+  back: a full restart sometimes works and often doesn't, and sending people to relog for nothing is
+  worse than saying nothing. It now says what is true - the client couldn't read them this session,
+  it's a Forever bug, and the addons run on defaults until it can. The note in the window adds the
+  only sure answer: keep a copy of your WTF folder.
+- The library now decides whether the saved variables loaded about 2 seconds after login instead of 5,
+  so an addon asking SavedVariablesLoaded() gets the truth sooner.
+- If you already had the window open when that answer arrived, the cards are drawn again, so they stop
+  asking you to set up addons we can no longer tell are set up.
+
 ## 1.0.3
 
 - Hardening of the guild comms: every incoming message now passes a per-sender budget (30 messages per

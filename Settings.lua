@@ -19,11 +19,9 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 7
+local VERSION = 8
 if (LIB.settingsVersion or 0) >= VERSION then return end
 LIB.settingsVersion = VERSION
-
-LIB.settingsPages = LIB.settingsPages or {}
 
 local ROW_H = 28
 local COL_MINIMAP, COL_LAUNCHER = 210, 320   -- the Settings button is right-aligned instead
@@ -160,11 +158,6 @@ function LIB.OpenAddonSettings(id)
     return true
 end
 
--- Old callers: what an addon's "Settings" button opens. Kept, but our own window is preferred.
-function LIB.RegisterSettingsPage(id, categoryOrFunc)
-    if id then LIB.settingsPages[id] = categoryOrFunc end
-end
-
 -- ---------------------------------------------------------------------------
 -- An addon's own settings panel, hosted in the YippYapp window
 --   LIB.RegisterOptionsPage(id, frame, name, height)
@@ -215,7 +208,7 @@ end
 
 local function SettingsTarget(id, label)
     if LIB.optionsPanels[id] then return "panel" end
-    return LIB.settingsPages[id] or FindCategory(id) or (label ~= id and FindCategory(label)) or nil
+    return FindCategory(id) or (label ~= id and FindCategory(label)) or nil
 end
 
 local function OpenSettingsFor(id, label)
@@ -236,7 +229,6 @@ local function Addons()
     for id in pairs(LIB.minimapButtons or {}) do add(id) end
     for id in pairs(LIB.launcherEntries or {}) do add(id) end
     for id in pairs(LIB.welcomePages or {}) do add(id) end
-    for id in pairs(LIB.settingsPages) do add(id) end
     local list = {}
     for id in pairs(byId) do
         local mm = LIB.minimapButtons and LIB.minimapButtons[id]

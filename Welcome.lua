@@ -36,17 +36,17 @@
 -- The home page carries a gold-on-black beta banner: the addons are actively developed, and bug
 -- reports and comments on CurseForge help (its button shows the link to all YippYapp addons there).
 --
--- After login (and a short wait) the lib looks at the unseen pages. If one of them needs setup, the
--- window opens by itself with just the unseen pages, never in combat or in an instance (it waits).
--- It also opens once, on the home page, after an update brings a new banner message (NOTICE below;
--- remembered as savedTable.welcomeNotice once the window is closed).
--- Otherwise nothing pops up and nothing is marked (the launcher is only ever buttons): the pages wait
--- for /yippyapp or the addon's own way in (e.g. a Welcome button on its settings page -> LIB.OpenWelcome).
--- A page counts as seen once it has actually been shown and the window closes.
+-- The window never opens by itself at the moment: while Forever loses saved variables on a cold start
+-- it would greet everyone every session. The machinery for it is still here behind two flags
+-- (AUTO_OPEN_FOR_SETUP and AUTO_OPEN_FOR_NOTICE, beside the NOTICE value they use) - turn them on
+-- when the client is fixed and it opens after login for an addon that needs setting up, or once for a
+-- new banner message, never in combat or in an instance.
+-- Until then the pages wait for /yippyapp or the addon's own way in (e.g. a Welcome button on its
+-- settings page -> LIB.OpenWelcome). A page counts as seen once it has been shown and the window closes.
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 13
+local VERSION = 17
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -59,7 +59,6 @@ local CATALOG = {
     { name = "Campfire",    what = "see which guildies are nearby, and how far", },
     { name = "BagWarden",   what = "keeps your bags tidy", },
 }
-LIB.welcomeCatalog = CATALOG
 
 local W, H = 620, 520
 local AUTO_DELAY = 3
@@ -136,8 +135,6 @@ local function Installed(name)
     local _, _, _, _, reason = C_AddOns.GetAddOnInfo(name)
     return reason ~= "MISSING"
 end
-
-local SHARED_H = 26  -- the "shared settings" line above the psst list
 
 local function PsstText()
     local have, rest = 0, {}
@@ -242,7 +239,7 @@ local PAGE_W = W - 48
 local SIDEBAR_W = 168
 local WIN_W = 24 + SIDEBAR_W + 12 + PAGE_W + 24
 local BANNER_H, BANNER_GAP = 52, 10
-local DISCLAIMER_H = 30   -- the line about Forever forgetting settings, under the banner
+local DISCLAIMER_H = 34   -- the two lines about Forever forgetting settings, under the banner
 local TOTAL_H = H + BANNER_H + BANNER_GAP
 local CONTENT_TOP = -38       -- below the title bar
 local PAGE_TOP = -64          -- below the back button on an addon page
@@ -333,6 +330,12 @@ local function BuildBanner(parent, width)
         .. "Every report and comment on |cffffd100CurseForge|r helps a lot!")
     return b
 end
+
+-- Opening by itself is OFF while Forever loses saved variables on a cold start (client bug 69913):
+-- "seen" cannot survive that, so the window would greet everyone every session, which is worse than
+-- missing the notice. Set these back to true when the client is fixed.
+local AUTO_OPEN_FOR_SETUP = false    -- first run: open on the addons that need setting up
+local AUTO_OPEN_FOR_NOTICE = false   -- once after an update with a new banner message
 
 -- Shown once to everyone after an update that brings a new banner message: raise NOTICE then.
 -- Stored in each addon's own saved table (welcomeNotice), like "seen".
@@ -635,7 +638,8 @@ local function Build()
     win.disclaimer:SetJustifyH("LEFT")
     win.disclaimer:SetSpacing(2)
     win.disclaimer:SetText("|cffffd100Note:|r WoW: Forever currently forgets addon settings when you "
-        .. "restart the game - a known client bug, not these addons. Your settings may look reset.")
+        .. "restart the game - a known client bug, not these addons. Another restart sometimes brings them "
+        .. "back, often not - only a copy of your WTF folder is certain.")
 
     local cardScroll = CreateFrame("ScrollFrame", nil, win.home, "UIPanelScrollFrameTemplate")
     win.cardScroll = cardScroll
@@ -764,7 +768,7 @@ local function Build()
 end
 
 -- ---------------------------------------------------------------------------
--- Showing the two views
+-- Showing the three views: the home page, an addon's page, and settings
 -- ---------------------------------------------------------------------------
 local function Prepare()
     if not win then Build() end
@@ -777,20 +781,37 @@ local function Prepare()
     win:Raise()
 end
 
+-- Which parts of the window each view uses. Everything not listed is hidden, so a view can't leave
+-- another one's frames on screen, and a new view only has to say what it needs.
+local VIEWS = {
+    home     = { home = true, settingsButton = true },
+    page     = { back = true, body = true, settingsButton = true },
+    settings = { back = true, settingsHost = true },
+}
+
+local function SetView(mode)
+    Prepare()                       -- builds the window the first time, and brings it up
+    local v = VIEWS[mode]
+    win.mode = mode
+    win.home:SetShown(v.home or false)
+    win.back:SetShown(v.back or false)
+    win.body:SetShown(v.body or false)
+    win.settingsHost:SetShown(v.settingsHost or false)
+    win.settingsButton:SetShown(v.settingsButton or false)
+    win.gear:Hide()                 -- only an addon's page turns it back on
+    if not v.body then
+        for _, p in pairs(pages) do if p.page then p.page:Hide() end end
+    end
+    if v.home then                  -- the split views set the sidebar up themselves
+        win.side:Hide()
+        win.sideDivider:Hide()
+    end
+end
+
 function ShowHome()
-    Prepare()
+    SetView("home")
     homeShown = true
-    win.mode = "home"
-    win.settingsButton:Show()
     if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText("YippYapp") end
-    win.home:Show()
-    win.sideDivider:Hide()
-    win.back:Hide()
-    win.gear:Hide()
-    win.side:Hide()
-    win.body:Hide()
-    win.settingsHost:Hide()
-    for _, p in pairs(pages) do if p.page then p.page:Hide() end end
     -- The home page is as tall as its cards need, between a floor and the full window height, so a
     -- couple of addons don't leave a large empty area.
     local cards = LayoutCards()
@@ -806,9 +827,6 @@ end
 
 -- Shared by the addon-page view and the settings view: sidebar on the left, content on the right.
 local function ShowSplit(title, sidebarKind, currentId)
-    Prepare()
-    win.home:Hide()
-    win.back:Show()
     win:SetHeight(TOTAL_H)
     if win.NineSlice and win.NineSlice.Text then win.NineSlice.Text:SetText(title) end
     local many = LayoutSidebar(sidebarKind, currentId) > 1
@@ -828,13 +846,10 @@ end
 function Select(id)
     local p = pages[id]
     if not p then return ShowHome() end
-    win.mode = "page"
-    win.settingsButton:Show()
+    SetView("page")
     viewed[id] = true
     win.current = id
     ShowSplit(p.title or p.id, "pages", id)
-    win.settingsHost:Hide()
-    win.body:Show()
     win.gear:SetShown(LIB.optionsPanels ~= nil and LIB.optionsPanels[id] ~= nil)
 
     for _, q in pairs(pages) do if q.page then q.page:Hide() end end
@@ -849,6 +864,7 @@ function Select(id)
     p.page:SetSize(PAGE_W, win.body:GetHeight() + top)
     if fresh and p.build then
         local ok, err = pcall(p.build, p.page)
+        p.buildError = (not ok) and tostring(err) or nil   -- /yippyapp test reports this
         if not ok then
             LIB.Debug("welcome page %s: %s", id, tostring(err))
             local fs = p.page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
@@ -862,17 +878,12 @@ end
 
 -- The settings view: the shared YippYapp settings, or one addon's own panel, hosted in our window.
 function ShowSettings(id)
-    if not win then Build() end
     local panels = LIB.OptionsPanels and LIB.OptionsPanels() or {}
     if id and not (LIB.optionsPanels and LIB.optionsPanels[id]) then id = nil end
-    win.mode = "settings"
+    SetView("settings")
     win.settingsId = id
-    win.settingsButton:Hide()
     ShowSplit(id and ((LIB.optionsPanels[id].name or id) .. " settings") or "YippYapp settings",
         "settings", id or "_shared")
-    win.body:Hide()
-    win.gear:Hide()
-    win.settingsHost:Show()
 
     -- Hide whatever was hosted before, then show what was asked for.
     if win.sharedSettings then win.sharedSettings:Hide() end
@@ -914,14 +925,13 @@ function Close()
         local p = pages[id]
         if p then SeenTable(p)[id] = p.version or 1 end
     end
-    if homeShown or next(viewed) then MarkNoticeSeen() end
+    if AUTO_OPEN_FOR_NOTICE and (homeShown or next(viewed)) then MarkNoticeSeen() end
     homeShown = false
     wipe(viewed)
 end
 
 --- Open the window on its settings view (id: that addon's own settings).
 function LIB.OpenWelcomeSettings(id)
-    if not win then Build() end
     ShowSettings(id)
 end
 
@@ -943,12 +953,6 @@ local function CanAutoOpen()
     local inInstance = IsInInstance()
     return not inInstance
 end
-
--- Opening by itself is OFF while Forever loses saved variables on a cold start (client bug 69913):
--- "seen" cannot survive that, so the window would greet everyone every session, which is worse than
--- missing the notice. Set these back to true when the client is fixed.
-local AUTO_OPEN_FOR_SETUP = false    -- first run: open on the addons that need setting up
-local AUTO_OPEN_FOR_NOTICE = false   -- once after an update with a new banner message
 
 local Evaluate
 function Evaluate()
@@ -973,6 +977,18 @@ function Evaluate()
     if not CanAutoOpen() then autoPending = true return end
     autoPending = nil
     ShowHome()
+end
+
+-- The answer arrives a second or two after login, so someone quick enough can already be looking at
+-- the home page while the cards still say what needs setting up. Draw them again once we know.
+-- Listened for once, but through LIB, so a newer copy of this file still gets the redraw.
+function LIB.WelcomeRedrawAfterSavedCheck()
+    if win and win:IsShown() and win.mode == "home" then ShowHome() end
+end
+
+if not LIB.welcomeSavedHooked then
+    LIB.welcomeSavedHooked = true
+    LIB.Listen("SAVED_VARIABLES_EMPTY", function() LIB.WelcomeRedrawAfterSavedCheck() end)
 end
 
 LIB.RegisterWelcomePage = nil  -- set below, after RegisterWelcome exists
@@ -1017,6 +1033,12 @@ SlashCmdList.YIPPYAPP = function(msg)
     if msg and msg:lower():match("^%s*debug") then
         if LIB.DebugLauncher then LIB.DebugLauncher() end
         if LIB.MinimapDebug then LIB.MinimapDebug() elseif LIB.DebugMinimap then LIB.DebugMinimap() end
+        return
+    end
+    -- "/yippyapp test": run every addon's self-test, plus the library's own checks.
+    if msg and msg:lower():match("^%s*test") then
+        if LIB.RunSelfTests then LIB.RunSelfTests()
+        else print("|cffffd100YippYapp|r the self-test isn't loaded (SelfTest.lua is missing from this addon).") end
         return
     end
     -- "/yippyapp settings": the shared YippYapp settings page.

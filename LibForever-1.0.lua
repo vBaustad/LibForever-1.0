@@ -12,12 +12,11 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 8
+local MAJOR, MINOR = "LibForever-1.0", 10
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
 LIB.callbacks = LIB.callbacks or {}
-LIB.frames = LIB.frames or {}
 -- A newer copy of this file runs over an older one: all state lives on LIB, and the event handlers
 -- below are registered only once (they call through LIB, so they use the newest code).
 local firstLoad = not LIB.coreHooked
@@ -532,16 +531,23 @@ local function CheckSavedVariables()
     LIB.savedVariablesState = marked > 0 and "loaded" or "empty"
     for _, t in ipairs(list) do t.yippyappSeen = time() end
     if LIB.savedVariablesState == "empty" then
-        -- One line only; the welcome window's own note carries the detail. A genuine first install
-        -- looks the same from in here, so the wording says "didn't load", not "you lost them".
-        print("|cffff4040YippYapp:|r your saved settings didn't load - a known Forever beta bug. "
-            .. "Restart the game fully to get them back.")
+        -- One line only, once per session for the whole family; the welcome window's note carries the
+        -- detail. A genuine first install looks the same from in here, so the wording says "couldn't be
+        -- read", not "you lost them" - and it never tells anyone to relog, because that doesn't work.
+        print("|cffff4040YippYapp:|r your saved settings couldn't be read this session - a known WoW: Forever "
+            .. "bug, not these addons. There is nothing to do from in here; a full restart sometimes brings "
+            .. "them back, often not. Until then the addons run on defaults.")
         LIB.Fire("SAVED_VARIABLES_EMPTY")
     end
 end
 
 if firstLoad then
-    LIB.On("PLAYER_LOGIN", function() C_Timer.After(5, CheckSavedVariables) end)
+    -- Two passes: the early one answers as soon as everyone has registered, so an addon asking
+    -- SavedVariablesLoaded() gets the truth sooner; the late one covers a slow or late registration.
+    LIB.On("PLAYER_LOGIN", function()
+        C_Timer.After(2, CheckSavedVariables)
+        C_Timer.After(5, CheckSavedVariables)
+    end)
 end
 
 -- ---------------------------------------------------------------------------

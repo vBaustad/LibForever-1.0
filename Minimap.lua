@@ -25,7 +25,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 10
+local VERSION = 11
 if (LIB.minimapVersion or 0) >= VERSION then return end
 LIB.minimapVersion = VERSION
 
@@ -292,7 +292,6 @@ local function Refresh()
         end
     end
 end
-LIB.RefreshMinimapButtons = Refresh
 
 -- ---------------------------------------------------------------------------
 -- API

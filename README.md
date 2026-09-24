@@ -18,12 +18,13 @@ the modules you use.
 
 | File | What it gives you |
 |---|---|
-| `LibForever-1.0.lua` | **Core.** Events and callbacks: `On(event, fn)`, `Listen`, `Fire`, `Debounce`. Identity: `Me`, `FullName`, `ShortName`, `ColorName`. The guild roster, from the updates the server sends: `roster`, `IsOnline`, `IsGuildie` (roster only) and `KnownGuildie` (roster, or heard on the guild addon channel). Guild addon comms: `RegisterComm`, `Send` (needs AceComm-3.0), with `CommStats(prefix)` for a sent/received count. Map distance in yards: `MyPosition`, `Distance`. Shared data: `ProvideData`, `GetData`. Saved-variable defaults and migrations: `PrepareDB(db, defaults, migrations, version)`. |
+| `LibForever-1.0.lua` | **Core.** Events and callbacks: `On(event, fn)`, `Listen`, `Fire`, `Debounce`. Identity: `Me`, `FullName`, `ShortName`, `ColorName`. The guild roster, from the updates the server sends: `roster`, `IsOnline`, `IsGuildie` (roster only) and `KnownGuildie` (roster, or heard on the guild addon channel). Guild addon comms: `RegisterComm`, `Send` (needs AceComm-3.0), with `CommStats(prefix)` for a sent/received count and a per-sender budget that drops a flood before your handler sees it. Map distance in yards: `MyPosition`, `Distance`. Shared data between our addons: `ProvideData`, `GetData` (see below). Saved-variable defaults and migrations: `PrepareDB(db, defaults, migrations, version)`, and whether the client read the saved variables at all: `SavedVariablesLoaded()` plus the `SAVED_VARIABLES_EMPTY` callback. Text from other players: `Sanitize(text, maxLen)`. |
 | `Maps.lua` | Generated Forever map sizes, which `Distance` uses. |
 | `Launcher.lua` | **An optional launcher bar** at a screen edge, with one button per addon. It is off by default, and players turn it on from the YippYapp settings page. `RegisterLauncher(entry, savedTable)`, `SetLauncherHidden(id, hidden)`, `SetLauncherEnabled(on)`. `LauncherOptions(parent, id)` gives you a 300x60 block for your own settings page that links to the YippYapp page. |
 | `Windows.lua` | **Window handling.** `RegisterWindow(frame, savedTable, key)` makes a window toplevel and draggable and saves where it was put. The first time, it opens beside our other open windows. Escape closes one window at a time, and the close button works in combat. `RegisterPopup(frame)` gives a popup the same Escape and close handling. |
 | `Welcome.lua` | **One shared welcome window.** `RegisterWelcome(page, savedTable)` adds a tab for your addon, and `OpenWelcome(id)` or `/yippyapp` opens the window. It only opens by itself when an addon needs setup, and never in combat or in an instance. |
 | `Minimap.lua` | **Minimap buttons**, through LibDataBroker-1.1 and LibDBIcon-1.0, which your addon ships. `RegisterMinimapButton(id, opts, savedTable)` and `SetMinimapButtonShown(id, shown)`. By default the YippYapp addons share one minimap button that opens a row of their buttons (`SetMinimapGrouped`). Each addon keeps its own LDB object for broker displays. |
+| `SelfTest.lua` | **`/yippyapp test`.** `RegisterSelfTest(id, fn)` adds your addon's own test (`fn() -> ok, message`); the runner also opens and closes every registered window and settings page, draws every welcome card and fires every launcher tooltip, all in `pcall`. It never runs in combat and restores anything it touched, including the welcome window's "seen" flags. |
 | `Settings.lua` | **The YippYapp settings page**, at Options > AddOns > YippYapp or `/yippyapp settings`. It has minimap grouping and the launcher, and for each addon its minimap and launcher buttons with a link to its own page. `RegisterOptionsPage(id, frame, name)` lists your settings page under YippYapp and returns its category. `OpenYippYappSettings()` opens the page. |
 
 ```
@@ -35,6 +36,7 @@ Libs\LibForever-1.0\Windows.lua
 Libs\LibForever-1.0\Welcome.lua
 Libs\LibForever-1.0\Minimap.lua
 Libs\LibForever-1.0\Settings.lua
+Libs\LibForever-1.0\SelfTest.lua
 ```
 
 ```lua
@@ -50,6 +52,43 @@ LIB.RegisterWindow(myWindow, MyAddonDB, "pos")
 ```
 
 Each file's header comment documents its full API.
+
+## Sharing data between addons
+
+`ProvideData(name, table)` publishes a small table of functions under a name; `GetData(name)` reads
+whatever is there, or nil. Nothing reaches into another addon: both sides only ever see this table, and
+an addon that isn't installed is simply absent.
+
+The family uses it for one thing today - BagWarden asking the others what it must not offer for deletion.
+The providers are named after the addon and what they cover:
+
+| Name | Published by | Covers |
+|---|---|---|
+| `BuffWardenWeaponEnhancers` | BuffWarden | the stone, oil or poison for the weapon you carry |
+| `AutoFeedConsumables` | AutoFeed | the food, water and bandages its macros use |
+| `GuildhallWanted` | Guildhall | what you listed, or guildies are after |
+| `SkillwrightReagents` | (not published yet) | reagents for recipes you know |
+
+A provider table holds up to two functions:
+
+```lua
+LIB.ProvideData("AutoFeedConsumables", {
+    -- Must this item be kept? A reason (shown to the player), true for a generic one, or nil for no opinion.
+    Keep = function(itemID) return protected[itemID] end,
+    -- Optional, ordering only: "critical", "useful", "spare", or nil. It can never protect an item.
+    Tier = function(itemID) return tiers[itemID] end,
+})
+```
+
+Rules both sides follow:
+
+- **Answer from a table, not a search.** `Keep` is called for every candidate item while the bags are
+  open. Rebuild your lookup when your settings change and answer from it.
+- **Never cache the answer on the asking side.** It follows the player's equipped weapon, known recipes
+  and settings, so a stale answer is worse than the lookup it saves.
+- **A provider that errors keeps the item.** The consumer calls through `pcall` and treats a throw as
+  "keep it", so a broken provider can't get anything deleted - but it also can't be relied on to be there.
+- **Publish again when your data changes**, with the same name: `ProvideData` just replaces the table.
 
 ## What a click does (the family's convention)
 
@@ -74,11 +113,23 @@ should follow the same rule for players who split the buttons up.
   `ToggleGameMenu()`. Closing it returns to the game menu, which calls a protected function, and from addon code that
   is blocked (`ADDON_ACTION_FORBIDDEN`). To show one of your windows from a settings page, open it above the panel
   and leave the panel open, as the welcome window does.
+- **Register a self-test.** `LIB.RegisterSelfTest("MyAddon", fn)` at login, where `fn()` returns `ok, message`
+  (or throws). Wire up the test command your addon already has: it should exercise your real code paths, not
+  assert on constants, and it must not change a saved setting - if it needs state, put it back. `/yippyapp test`
+  then runs every addon's test plus the shared checks, and one command answers "did that cleanup break anything".
 - **Anything that came from another player is untrusted:** run it through `LIB.Sanitize(text, maxLen)` before
   storing it, showing it in a tooltip or chat line, or sending it on. A name or note straight from a peer can
   carry `|H` links, `|T` textures and `|c` colours, and a long one can bloat your saved variables. The library
   already drops messages from a sender who floods a prefix (`CommStats` counts them as `OverBudget`), but it
   cannot know which parts of your payload are text.
+- **When `LIB.SavedVariablesLoaded()` is false, don't act on what you read from your saved table.** The client
+  handed you nothing, so everything in it is a default: don't announce it to other players, don't count it as
+  "already set up", and don't write a guess back. The library says so once per session, for the whole family,
+  about 2 seconds after login (before that it answers "loaded", because it cannot know yet). It cannot protect
+  the file: WoW rewrites saved variables from memory at logout whatever we put there, so by the time we can
+  tell, the old contents are already lost. What you can do is say so in your own UI, the way Skillwright's
+  guide does, and make your `needsSetup` return false in that state so your card doesn't ask for setup the
+  player may already have done.
 - Don't gate addon messages on `InChatLockdown()`. That lockdown is for real chat; addon messages go out, and
   `Send` deals with a refused message itself.
 
