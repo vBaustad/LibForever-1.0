@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 10
+local MAJOR, MINOR = "LibForever-1.0", 11
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -78,8 +78,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Identity: names are realmless in Forever and surnames can be hidden
 -- ---------------------------------------------------------------------------
+--- A realm name in the spelling addon messages and the guild roster use: no spaces, hyphens or
+--- apostrophes. The client hands out the other spelling too - UnitName's second return is raw
+--- ("Bleeding Hollow"), while the sender of an addon message is normalised ("BleedingHollow") - so a
+--- key built from one never matches a key built from the other. Run any realm you didn't get from an
+--- addon message through this first.
+function LIB.NormalizeRealm(realm)
+    return (tostring(realm or ""):gsub("[%s%-']", ""))
+end
+
+-- The extra parentheses matter: gsub returns the string AND the number of replacements, and without
+-- them a caller that passes Realm() straight on carries that number with it.
 function LIB.Realm()
-    return GetNormalizedRealmName() or (GetRealmName() or ""):gsub("[%s%-]", "")
+    return GetNormalizedRealmName() or LIB.NormalizeRealm(GetRealmName())
 end
 
 --- Always "Name-Realm", the form addon messages and the guild roster use.
@@ -87,6 +98,29 @@ function LIB.FullName(name)
     if not name or name == "" then return nil end
     if not name:find("-", 1, true) then name = name .. "-" .. LIB.Realm() end
     return name
+end
+
+-- A value the client is keeping from us (identity is restricted in a battleground, for instance).
+-- Touching one the wrong way is an error, so this is the only thing that looks at it, and anything
+-- unexpected counts as secret rather than risking the comparison.
+local function Secret(v)
+    if not issecretvalue then return false end
+    local ok, secret = pcall(issecretvalue, v)
+    return (not ok) or (secret and true or false)
+end
+
+--- The "Name-Realm" key for a unit, in the spelling everything else here uses. Use it instead of
+--- building a key out of UnitName yourself: the realm it gives you for someone from another realm is
+--- the raw one, which would never match the same player heard on the addon channel, and the name can
+--- be secret when the client restricts identity - in a battleground, say.
+--- nil means "we don't know who this is right now", never "there is nobody there": don't cache it,
+--- don't delete anything over it, just ask again later.
+function LIB.UnitKey(unit)
+    local name, realm = UnitName(unit or "player")
+    if Secret(name) or Secret(realm) then return nil end
+    if not name or name == "" or name == UNKNOWNOBJECT then return nil end
+    if realm and realm ~= "" then return name .. "-" .. LIB.NormalizeRealm(realm) end
+    return LIB.FullName(name)
 end
 
 function LIB.Me()

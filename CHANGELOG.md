@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: LIB.Realm() returned two values when it had to fall back on the raw realm name (the string and
+  gsub's replacement count), so a caller passing it straight on carried the number with it.
+- New: LIB.UnitKey(unit) and LIB.NormalizeRealm(realm). UnitName gives another player's realm raw
+  ("Bleeding Hollow") while an addon message's sender is normalised ("BleedingHollow"), so a key built
+  from one never matched the same player heard through the other. That was a real bug in Campfire;
+  now nobody has to know about it.
+  UnitKey also answers nil when the client is keeping a unit's identity secret (in a battleground,
+  for instance) - nil there means "we don't know who this is right now", not "nobody is there".
+
 ## 1.0.5
 
 - Settings pages no longer have to guess how wide they are. `LIB.OptionsWidth(panel)` answers with the
