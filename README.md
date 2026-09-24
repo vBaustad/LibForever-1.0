@@ -25,7 +25,7 @@ the modules you use.
 | `Welcome.lua` | **One shared welcome window.** `RegisterWelcome(page, savedTable)` adds a tab for your addon, and `OpenWelcome(id)` or `/yippyapp` opens the window. It only opens by itself when an addon needs setup, and never in combat or in an instance. |
 | `Minimap.lua` | **Minimap buttons**, through LibDataBroker-1.1 and LibDBIcon-1.0, which your addon ships. `RegisterMinimapButton(id, opts, savedTable)` and `SetMinimapButtonShown(id, shown)`. By default the YippYapp addons share one minimap button that opens a row of their buttons (`SetMinimapGrouped`). Each addon keeps its own LDB object for broker displays. |
 | `SelfTest.lua` | **`/yippyapp test`.** `RegisterSelfTest(id, fn)` adds your addon's own test (`fn() -> ok, message`); the runner also opens and closes every registered window and settings page, draws every welcome card and fires every launcher tooltip, all in `pcall`. It never runs in combat and restores anything it touched, including the welcome window's "seen" flags. |
-| `Settings.lua` | **The YippYapp settings page**, at Options > AddOns > YippYapp or `/yippyapp settings`. It has minimap grouping and the launcher, and for each addon its minimap and launcher buttons with a link to its own page. `RegisterOptionsPage(id, frame, name)` lists your settings page under YippYapp and returns its category. `OpenYippYappSettings()` opens the page. |
+| `Settings.lua` | **The YippYapp settings page**, at Options > AddOns > YippYapp or `/yippyapp settings`. It has minimap grouping and the launcher, and for each addon its minimap and launcher buttons with a link to its own page. `RegisterOptionsPage(id, frame, name, height)` lists your settings page under YippYapp. `OptionsWidth(panel)` is the width your page actually has and `OnOptionsResize(panel, fn)` tells you when it changes; `OptionsMetrics()` gives the measurements our pages share. `OpenYippYappSettings()` opens the page. |
 
 ```
 Libs\LibStub\LibStub.lua
@@ -113,6 +113,10 @@ should follow the same rule for players who split the buttons up.
   `ToggleGameMenu()`. Closing it returns to the game menu, which calls a protected function, and from addon code that
   is blocked (`ADDON_ACTION_FORBIDDEN`). To show one of your windows from a settings page, open it above the panel
   and leave the panel open, as the welcome window does.
+- **Never hard-code your settings page's width.** The window sizes the page, and a page long enough to
+  scroll gets a scrollbar's width less than one that doesn't - so any fixed number is wrong on one of the
+  two, and the symptom is text cut off mid-sentence. Ask `LIB.OptionsWidth(panel)`, and lay out from
+  `LIB.OnOptionsResize(panel, function(width) ... end)` rather than once while building.
 - **Register a self-test.** `LIB.RegisterSelfTest("MyAddon", fn)` at login, where `fn()` returns `ok, message`
   (or throws). Wire up the test command your addon already has: it should exercise your real code paths, not
   assert on constants, and it must not change a saved setting - if it needs state, put it back. `/yippyapp test`

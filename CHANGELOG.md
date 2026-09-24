@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.5
+
+- Settings pages no longer have to guess how wide they are. `LIB.OptionsWidth(panel)` answers with the
+  width the page actually has, and `LIB.OnOptionsResize(panel, fn)` calls you with it whenever the window
+  shows or resizes the page. A page that scrolls gets 28 pixels less than one that doesn't, which is why
+  a hard-coded number was wrong on one of the two and cut text off mid-sentence.
+- `LIB.OptionsMetrics()` hands out the measurements our pages share (padding, indent, control column,
+  row height and the standard gaps), so six pages don't each invent their own.
+
 ## 1.0.4
 
 - New: `/yippyapp test` - one command that says whether anything is broken. Each addon can

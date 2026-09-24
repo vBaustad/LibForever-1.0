@@ -19,7 +19,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 8
+local VERSION = 9
 if (LIB.settingsVersion or 0) >= VERSION then return end
 LIB.settingsVersion = VERSION
 
@@ -62,6 +62,71 @@ function LIB.ShowCoffeePopup()
     StaticPopup_Show("LIBFOREVER_YIPPYAPP_BMC")
 end
 
+-- ---------------------------------------------------------------------------
+-- How wide is my page? (ask, never guess)
+-- ---------------------------------------------------------------------------
+-- The window sizes a hosted settings page itself, and a page long enough to need a scrollbar gets a
+-- scrollbar's width less than one that doesn't. A page that picks its own number is wrong on one of
+-- the two, and the symptom is text clipped mid-sentence.
+local SCROLLBAR_W = 28
+local FALLBACK_W = 572   -- only until the window has published its real width
+
+local function PageWidth()
+    return LIB.optionsPageWidth or FALLBACK_W
+end
+
+--- The content width your settings page has right now. Before it has ever been shown, the width it
+--- is about to get - so lay out from OnOptionsResize rather than once at build time.
+function LIB.OptionsWidth(panel)
+    local w = (type(panel) == "table" and panel.GetWidth) and panel:GetWidth() or nil
+    if w and w > 1 then return math.floor(w + 0.5) end
+    -- Not laid out yet. A page that declared a height may end up scrolling, and being 28 pixels too
+    -- narrow only wraps a line where being too wide would cut it off, so answer for the scrollbar.
+    for _, entry in pairs(LIB.optionsPanels) do
+        if entry.frame == panel and entry.height then return PageWidth() - SCROLLBAR_W end
+    end
+    return PageWidth()
+end
+
+--- Lay the page out whenever it has a width: fn(width) runs when the page is shown and again every
+--- time the window resizes it, and never twice for the same width. Returns the width it starts with.
+function LIB.OnOptionsResize(panel, fn)
+    if type(panel) ~= "table" or type(fn) ~= "function" or not panel.HookScript then return nil end
+    local last
+    local function run()
+        local w = LIB.OptionsWidth(panel)
+        if w == last then return end
+        last = w
+        local ok, err = pcall(fn, w)
+        if not ok then LIB.Debug("options page resize: %s", tostring(err)) end
+    end
+    panel:HookScript("OnSizeChanged", run)
+    panel:HookScript("OnShow", run)
+    if panel:IsShown() then run() end
+    return LIB.OptionsWidth(panel)
+end
+
+-- The measurements our settings pages share, so six pages don't each invent their own. Advisory: a
+-- page with a reason can differ, but matching these is what makes them look like one family.
+local METRICS = {
+    pad = 8,            -- from the page edge to its content
+    indent = 26,        -- a control that belongs under the one above it
+    controlX = 200,     -- where a row's control sits, measured from the page's left
+    rowHeight = 26,
+    gapSection = 16,    -- between blocks
+    gapHeading = 18,    -- under a heading
+    gapTight = 3,       -- between a control and its own description
+    gapBlock = 12,      -- between rows inside a block
+}
+
+--- A copy of the house measurements (pad, indent, controlX, rowHeight, gapSection, gapHeading,
+--- gapTight, gapBlock). Yours to change: it is a fresh table every time.
+function LIB.OptionsMetrics()
+    local copy = {}
+    for k, v in pairs(METRICS) do copy[k] = v end
+    return copy
+end
+
 -- A settings panel taller than the room it gets: put it in a scroll frame. The panel becomes the
 -- scroll child, sized to the scroll frame's width and the given height. (Used by the window.)
 function LIB.PanelScroller(page, height)
@@ -69,10 +134,12 @@ function LIB.PanelScroller(page, height)
     outer:Hide()
     local scroll = CreateFrame("ScrollFrame", nil, outer, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 0, -4)
-    scroll:SetPoint("BOTTOMRIGHT", -28, 4)
+    scroll:SetPoint("BOTTOMRIGHT", -SCROLLBAR_W, 4)
     page:SetParent(scroll)
     page:ClearAllPoints()
-    page:SetSize(600, height)
+    -- The scroll frame has no size until it is anchored in the window, so start at the width this
+    -- page will get there: a page that reads its width while building sees the right number.
+    page:SetSize(PageWidth() - SCROLLBAR_W, height)
     scroll:SetScrollChild(page)
     scroll:SetScript("OnSizeChanged", function(_, w) if w and w > 0 then page:SetWidth(w) end end)
     page:Show()

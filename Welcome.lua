@@ -46,7 +46,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 17
+local VERSION = 18
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -236,6 +236,9 @@ end
 -- Sizes. The addon pages keep the width they were drawn for, so the window is wide enough for the
 -- page plus the sidebar beside it.
 local PAGE_W = W - 48
+-- The width a settings page hosted here is given. Published so no page has to guess it;
+-- LIB.OptionsWidth(panel) is what an addon asks (Settings.lua).
+LIB.optionsPageWidth = PAGE_W
 local SIDEBAR_W = 168
 local WIN_W = 24 + SIDEBAR_W + 12 + PAGE_W + 24
 local BANNER_H, BANNER_GAP = 52, 10
