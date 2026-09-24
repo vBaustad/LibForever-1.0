@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The welcome window opens by itself again, once, when an addon needs setting up or an update brings
+  a new message - but only on a client that keeps your settings (build 70009 and newer). On an older
+  client it stays quiet, because "already seen" can't survive there and it would greet you at every
+  reload, which is the thing people rightly complained about.
+- Fixed while testing that: a window that opened by itself never recorded that you had seen it, so the
+  same card brought it back at the next login until the addon was set up. It now counts as seen when
+  you close it - one greeting per addon, and a newly installed addon still gets its own.
+- WoW: Forever build 70009 fixes the client bug that lost addon settings, so the warning about it now
+  depends on the client you are running. On 70009 and newer nothing is said, because an empty settings
+  file there simply means you just installed us - and the note about Forever forgetting settings is
+  gone from the window's home page too, with the cards taking the space back.
+- On a fixed client a brand-new player now gets their setup prompts again: we no longer mistake a
+  first install for lost data and hide them.
+- On an older client nothing changes: the warning, the note and the caution are all still there.
 - Fixed: LIB.Realm() returned two values when it had to fall back on the raw realm name (the string and
   gsub's replacement count), so a caller passing it straight on carried the number with it.
 - New: LIB.UnitKey(unit) and LIB.NormalizeRealm(realm). UnitName gives another player's realm raw

@@ -36,17 +36,16 @@
 -- The home page carries a gold-on-black beta banner: the addons are actively developed, and bug
 -- reports and comments on CurseForge help (its button shows the link to all YippYapp addons there).
 --
--- The window never opens by itself at the moment: while Forever loses saved variables on a cold start
--- it would greet everyone every session. The machinery for it is still here behind two flags
--- (AUTO_OPEN_FOR_SETUP and AUTO_OPEN_FOR_NOTICE, beside the NOTICE value they use) - turn them on
--- when the client is fixed and it opens after login for an addon that needs setting up, or once for a
--- new banner message, never in combat or in an instance.
--- Until then the pages wait for /yippyapp or the addon's own way in (e.g. a Welcome button on its
--- settings page -> LIB.OpenWelcome). A page counts as seen once it has been shown and the window closes.
+-- After login (and a short wait) the window opens by itself for an addon that needs setting up, and
+-- once more after an update brings a new banner message (NOTICE below) - never in combat or in an
+-- instance, and only on a client that keeps saved variables, since "seen" is what stops it happening
+-- again (see AutoOpenAllowed). On a client that loses them it never opens by itself, and the pages
+-- wait for /yippyapp or the addon's own way in (e.g. a Welcome button on its settings page ->
+-- LIB.OpenWelcome). A page counts as seen once it has been shown and the window closes.
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 18
+local VERSION = 20
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -76,6 +75,10 @@ end
 
 local win           -- the window, built on first open
 local viewed = {}   -- ids actually looked at since the window opened
+-- Pages the window opened BY ITSELF for. Their card was on the home page, so they count as seen when
+-- it closes: without this the same card brings the window back at every login until the addon is set
+-- up, which is the "it greets me every session" complaint wearing a different hat.
+local autoShown = {}
 local loginDone = LIB.welcomeLoginDone
 local homeShown     -- the home page has been looked at since the window opened
 local autoPending   -- an auto-open is waiting for combat or the instance to end
@@ -243,6 +246,16 @@ local SIDEBAR_W = 168
 local WIN_W = 24 + SIDEBAR_W + 12 + PAGE_W + 24
 local BANNER_H, BANNER_GAP = 52, 10
 local DISCLAIMER_H = 34   -- the two lines about Forever forgetting settings, under the banner
+
+-- Those two lines are only true on a client that still loses saved variables (fixed in build 70009).
+-- On a fixed client they are a warning about nothing, so the note goes and the cards take the room.
+local function ShowDisclaimer()
+    return not LIB.SavedVariablesBugPossible or LIB.SavedVariablesBugPossible()
+end
+
+local function DisclaimerH()
+    return ShowDisclaimer() and DISCLAIMER_H or 0
+end
 local TOTAL_H = H + BANNER_H + BANNER_GAP
 local CONTENT_TOP = -38       -- below the title bar
 local PAGE_TOP = -64          -- below the back button on an addon page
@@ -334,11 +347,13 @@ local function BuildBanner(parent, width)
     return b
 end
 
--- Opening by itself is OFF while Forever loses saved variables on a cold start (client bug 69913):
--- "seen" cannot survive that, so the window would greet everyone every session, which is worse than
--- missing the notice. Set these back to true when the client is fixed.
-local AUTO_OPEN_FOR_SETUP = false    -- first run: open on the addons that need setting up
-local AUTO_OPEN_FOR_NOTICE = false   -- once after an update with a new banner message
+-- Opening by itself depends on the client keeping saved variables, because it is "seen" that makes it
+-- happen once instead of every session. On a client that loses them (the bug fixed in build 70009) the
+-- window greeted everyone at every reload, which is what players complained about, so there it stays
+-- quiet - the pages still wait for /yippyapp. On a client that keeps them it opens once and never again.
+local function AutoOpenAllowed()
+    return not (LIB.SavedVariablesBugPossible and LIB.SavedVariablesBugPossible())
+end
 
 -- Shown once to everyone after an update that brings a new banner message: raise NOTICE then.
 -- Stored in each addon's own saved table (welcomeNotice), like "seen".
@@ -640,13 +655,14 @@ local function Build()
     win.disclaimer:SetPoint("RIGHT", win.home, "RIGHT", -2, 0)
     win.disclaimer:SetJustifyH("LEFT")
     win.disclaimer:SetSpacing(2)
+    win.disclaimer:SetShown(ShowDisclaimer())
     win.disclaimer:SetText("|cffffd100Note:|r WoW: Forever currently forgets addon settings when you "
         .. "restart the game - a known client bug, not these addons. Another restart sometimes brings them "
         .. "back, often not - only a copy of your WTF folder is certain.")
 
     local cardScroll = CreateFrame("ScrollFrame", nil, win.home, "UIPanelScrollFrameTemplate")
     win.cardScroll = cardScroll
-    cardScroll:SetPoint("TOPLEFT", 0, -(BANNER_H + BANNER_GAP + DISCLAIMER_H))
+    cardScroll:SetPoint("TOPLEFT", 0, -(BANNER_H + BANNER_GAP + DisclaimerH()))
     cardScroll:SetPoint("BOTTOMRIGHT", -26, 0)
     win.cardHost = CreateFrame("Frame", nil, cardScroll)
     win.cardHost:SetSize(WIN_W - 48 - 26, 10)
@@ -818,7 +834,7 @@ function ShowHome()
     -- The home page is as tall as its cards need, between a floor and the full window height, so a
     -- couple of addons don't leave a large empty area.
     local cards = LayoutCards()
-    local chrome = -CONTENT_TOP + BANNER_H + BANNER_GAP + DISCLAIMER_H + BOTTOM_BAR + 8
+    local chrome = -CONTENT_TOP + BANNER_H + BANNER_GAP + DisclaimerH() + BOTTOM_BAR + 8
     win:SetHeight(chrome + math.max(HOME_MIN_H, math.min(cards, TOTAL_H - chrome)))
     C_Timer.After(0, function()
         if win and win:IsShown() and win.home:IsShown() then
@@ -928,7 +944,12 @@ function Close()
         local p = pages[id]
         if p then SeenTable(p)[id] = p.version or 1 end
     end
-    if AUTO_OPEN_FOR_NOTICE and (homeShown or next(viewed)) then MarkNoticeSeen() end
+    for id in pairs(autoShown) do
+        local p = pages[id]
+        if p then SeenTable(p)[id] = p.version or 1 end
+    end
+    wipe(autoShown)
+    if AutoOpenAllowed() and (homeShown or next(viewed)) then MarkNoticeSeen() end
     homeShown = false
     wipe(viewed)
 end
@@ -963,12 +984,14 @@ function Evaluate()
     if win and win:IsShown() then return end
     -- If we can't trust what is saved, we don't know what the player has already seen or done.
     if LIB.SavedVariablesLoaded and not LIB.SavedVariablesLoaded() then autoPending = nil return end
-    local setup = false
-    if AUTO_OPEN_FOR_SETUP and SetupKnown() then
-        for _, p in ipairs(Sorted(Unseen)) do if NeedsSetup(p) then setup = true end end
+    local setup, reasons = false, {}
+    if AutoOpenAllowed() and SetupKnown() then
+        for _, p in ipairs(Sorted(Unseen)) do
+            if NeedsSetup(p) then setup, reasons[p.id] = true, true end
+        end
     end
     -- Besides setup, the window opens once after an update with a new banner message (NOTICE).
-    local notice = AUTO_OPEN_FOR_NOTICE and NoticePending()
+    local notice = AutoOpenAllowed() and NoticePending()
     if not setup and not notice then autoPending = nil return end
     -- Only the banner message would open the window: look again a few seconds later first, in case a
     -- saved table (and its "seen" flag) arrives late. Better to miss the notice than to nag.
@@ -979,6 +1002,7 @@ function Evaluate()
     end
     if not CanAutoOpen() then autoPending = true return end
     autoPending = nil
+    for id in pairs(reasons) do autoShown[id] = true end
     ShowHome()
 end
 

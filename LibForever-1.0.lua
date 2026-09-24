@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 11
+local MAJOR, MINOR = "LibForever-1.0", 12
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -519,8 +519,15 @@ end
 -- We can't recover what never loaded, but we can SAY so, and let the addons go quiet instead of
 -- publishing empty data. Each registered saved table gets a marker once per session; a table that
 -- comes back without its marker did not load.
+-- Fixed by the client in build 70009. An empty store looks identical whichever caused it, so what we
+-- are allowed to CLAIM depends on the client: on a build that still has the bug, silence would leave
+-- someone hunting for settings that are gone; on a build that doesn't, the only remaining explanation
+-- is a first install, and a red "your settings couldn't be read" is then both untrue and the first
+-- thing a new player ever sees from us. The machinery stays either way - people run old clients, and
+-- the bug can come back - it just stops talking.
 --   LIB.RegisterSavedTable(t)      add a table to the check (the lib adds the ones it knows)
 --   LIB.SavedVariablesLoaded()     false only when we are sure they did not load, else true
+--   LIB.SavedVariablesBugPossible()  whether this client can lose them at all
 --   LIB.Listen("SAVED_VARIABLES_EMPTY", fn)   fires once, a second or two after login
 -- ---------------------------------------------------------------------------
 LIB.savedTables = LIB.savedTables or {}
@@ -549,6 +556,30 @@ local function AllSavedTables()
     return list
 end
 
+--- The client's build number, the SECOND return from GetBuildInfo ("1.60.1" first, then "70009").
+--- The fourth is the interface version (11215), which would compare as an older build forever.
+function LIB.ClientBuild()
+    if not GetBuildInfo then return nil end
+    local ok, _, build = pcall(GetBuildInfo)
+    return ok and tonumber(build) or nil
+end
+
+local FIXED_IN_BUILD = 70009
+
+--- Can this client lose saved variables on a cold start? Everything we say to a player about lost
+--- settings has to go through this, so nobody repeats the build check.
+--- There are three states, and this tells the two empty ones apart:
+---   SavedVariablesLoaded() true                   they loaded, or it is too early to tell
+---   loaded false (and this true)                  empty on a client that can lose them: say so
+---   empty on a client that can't                  a first install; we say nothing and
+---                                                 SavedVariablesLoaded() stays true
+function LIB.SavedVariablesBugPossible()
+    local build = LIB.ClientBuild()
+    -- A build number we can't read: keep quiet. Being silent on an affected client leaves one player
+    -- puzzled; claiming lost settings on a fixed one lies to every new player at their first login.
+    return build ~= nil and build < FIXED_IN_BUILD
+end
+
 --- False only when we are sure this session started without the saved variables.
 function LIB.SavedVariablesLoaded()
     return LIB.savedVariablesState ~= "empty"
@@ -562,7 +593,15 @@ local function CheckSavedVariables()
     for _, t in ipairs(list) do
         if t.yippyappSeen then marked = marked + 1 end
     end
-    LIB.savedVariablesState = marked > 0 and "loaded" or "empty"
+    if marked > 0 then
+        LIB.savedVariablesState = "loaded"
+    elseif LIB.SavedVariablesBugPossible() then
+        LIB.savedVariablesState = "empty"
+    else
+        -- Nothing marked, on a client that cannot lose saved variables: this is a first install.
+        -- "fresh" counts as loaded everywhere, so a new player still gets their setup prompts.
+        LIB.savedVariablesState = "fresh"
+    end
     for _, t in ipairs(list) do t.yippyappSeen = time() end
     if LIB.savedVariablesState == "empty" then
         -- One line only, once per session for the whole family; the welcome window's note carries the
