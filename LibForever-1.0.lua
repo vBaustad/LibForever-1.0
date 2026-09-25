@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 15
+local MAJOR, MINOR = "LibForever-1.0", 16
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -125,6 +125,19 @@ local function Separator(which, fallback)
     return type(v) == "string" and v or fallback
 end
 
+-- The unit's real realm, straight from its GUID (GetPlayerInfoByGUID returns realmName). This is the
+-- fact that settles "surname or another realm" for a second value that isn't our own realm: on paper
+-- the two are the same thing, just a second string. It may answer nothing at all (the API is
+-- MayReturnNothing, and a GUID isn't always there yet), and then we fall back on the setting.
+local function RealmFromGUID(unit)
+    if not (UnitGUID and GetPlayerInfoByGUID) then return nil end
+    local ok, guid = pcall(UnitGUID, unit)
+    if not ok or type(guid) ~= "string" or guid == "" then return nil end
+    local ok2, _, _, _, _, _, _, realm = pcall(GetPlayerInfoByGUID, guid)
+    if not ok2 or Secret(realm) or type(realm) ~= "string" or realm == "" then return nil end
+    return realm
+end
+
 -- name, surname, realm for a unit - whichever of the last two the client actually gave us, and nil
 -- for all three when we aren't allowed to know who this is. UnitNameUnmodified first, which is the
 -- client's own preference (UnitPopupShared.lua:7) and is not affected by anything that renames a unit.
@@ -138,12 +151,20 @@ local function NameParts(unit)
     -- Test the value before trusting a setting about what the value means: our own realm, however it
     -- is spelled, is a realm no matter what any CVar says. We have been caught twice reading a setting
     -- as if it were a fact.
-    if LIB.NormalizeRealm(second) == LIB.NormalizeRealm(GetRealmName and GetRealmName() or "")
-        or LIB.NormalizeRealm(second) == (GetNormalizedRealmName and GetNormalizedRealmName() or "") then
+    local ours = LIB.Realm()
+    local flat = LIB.NormalizeRealm(second)
+    if flat == ours or flat == LIB.NormalizeRealm(GetRealmName and GetRealmName() or "") then
         return name, nil, second          -- a realm: our own
     end
+    -- Not our realm, so it is either another realm or a surname, and those look identical as text.
+    -- Ask the GUID, which knows the unit's actual realm, before falling back on a setting.
+    local actual = RealmFromGUID(unit)
+    if actual then
+        if LIB.NormalizeRealm(actual) == flat then return name, nil, second end  -- another realm
+        return name, second, nil                                                -- a surname
+    end
     if RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled() then
-        return name, second, nil          -- a surname
+        return name, second, nil          -- a surname, as far as the setting knows
     end
     return name, nil, second              -- another realm
 end
@@ -218,6 +239,16 @@ function LIB.DebugIdentity()
     if UnitGUID and UnitNameFromGUID then
         local ok, guid = pcall(UnitGUID, "player")
         if ok and guid then pair("UnitNameFromGUID(own guid)", UnitNameFromGUID, guid) end
+    end
+    if UnitGUID and GetPlayerInfoByGUID then
+        pair("GetPlayerInfoByGUID(own guid) name/realm", function()
+            local guid = UnitGUID("player")
+            if not guid then return nil, nil end
+            local _, _, _, _, _, n, r = GetPlayerInfoByGUID(guid)
+            return n, r
+        end)
+    else
+        out("GetPlayerInfoByGUID: MISSING")
     end
     pair("GetNormalizedRealmName / GetRealmName", function()
         return (GetNormalizedRealmName and GetNormalizedRealmName()), (GetRealmName and GetRealmName())
