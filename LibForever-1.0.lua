@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 14
+local MAJOR, MINOR = "LibForever-1.0", 15
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -134,10 +134,18 @@ local function NameParts(unit)
     if Secret(name) or Secret(second) then return nil end
     if not name or name == "" or name == UNKNOWNOBJECT then return nil end
     if second == "" then second = nil end
-    if second and RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled() then
+    if not second then return name, nil, nil end
+    -- Test the value before trusting a setting about what the value means: our own realm, however it
+    -- is spelled, is a realm no matter what any CVar says. We have been caught twice reading a setting
+    -- as if it were a fact.
+    if LIB.NormalizeRealm(second) == LIB.NormalizeRealm(GetRealmName and GetRealmName() or "")
+        or LIB.NormalizeRealm(second) == (GetNormalizedRealmName and GetNormalizedRealmName() or "") then
+        return name, nil, second          -- a realm: our own
+    end
+    if RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled() then
         return name, second, nil          -- a surname
     end
-    return name, nil, second              -- a realm, or nothing
+    return name, nil, second              -- another realm
 end
 
 --- The "Name-Realm" key for a unit, in the spelling everything else here uses. Use it instead of
@@ -182,29 +190,71 @@ function LIB.IsMyStoredName(key)
     return name == first or myName == myFirst
 end
 
---- Support-only, from /yippyapp debug: everything the client will tell us about who we are, and the
---- spelling the SERVER uses for the same character in the guild roster. If those two disagree, every
---- key and self-check in the family is built on the wrong one, and this is where you see it.
+--- Support-only, from /yippyapp debug: every source the client has for our own name, printed raw and
+--- side by side, plus the spelling the SERVER uses for us in the guild roster. Nothing here is
+--- interpreted: nil prints as nil and an empty string as "", because telling those two apart is the
+--- whole point. One run of this says which API actually carries the surname.
 function LIB.DebugIdentity()
     local function out(fmt, ...) print("|cffffd100YippYapp|r " .. fmt:format(...)) end
-    local n1, s1 = UnitName("player")
-    local n2, s2 = (UnitNameUnmodified or UnitName)("player")
-    local regional = RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled()
-    out("UnitName: %s / %s", tostring(n1), tostring(s1))
-    out("UnitNameUnmodified: %s / %s", tostring(n2), tostring(s2))
-    out("regional unique names: %s, so the second value is a %s", tostring(regional),
-        regional and "SURNAME" or "realm")
-    out("we call ourselves: %s", tostring(LIB.Me()))
-    local first = tostring(n2 or n1 or ""):match("^%S+")
-    local hits = 0
-    for full in pairs(LIB.roster) do
-        if first ~= "" and full:find(first, 1, true) then
-            hits = hits + 1
-            out("the guild roster spells it: %s%s", full, full == LIB.Me() and " (matches)" or
-                " |cffff4040(DIFFERENT from what we call ourselves)|r")
+    -- Raw: nil, "" and a real string must all look different.
+    local function raw(v)
+        if v == nil then return "nil" end
+        if type(v) ~= "string" then return tostring(v) end
+        if v == "" or v:match("^%s+$") then return "<" .. v .. "> (" .. #v .. " chars)" end
+        return v
+    end
+    local function pair(label, fn, ...)
+        if type(fn) ~= "function" then out("%s: MISSING", label) return end
+        local ok, a, b = pcall(fn, ...)
+        if not ok then out("%s: error (%s)", label, tostring(a)) return end
+        out("%s: [1]=%s  [2]=%s", label, raw(a), raw(b))
+    end
+
+    out("--- who the client says we are ---")
+    pair("UnitName(player)", UnitName, "player")
+    pair("UnitNameUnmodified(player)", UnitNameUnmodified, "player")
+    pair("UnitFullName(player)", UnitFullName, "player")
+    pair("GetUnitName(player, true)", GetUnitName, "player", true)
+    if UnitGUID and UnitNameFromGUID then
+        local ok, guid = pcall(UnitGUID, "player")
+        if ok and guid then pair("UnitNameFromGUID(own guid)", UnitNameFromGUID, guid) end
+    end
+    pair("GetNormalizedRealmName / GetRealmName", function()
+        return (GetNormalizedRealmName and GetNormalizedRealmName()), (GetRealmName and GetRealmName())
+    end)
+    pair("RegionalUniqueNamesEnabled", RegionalUniqueNamesEnabled)
+    pair("ShouldDisplaySurname", C_PlayerInfo and C_PlayerInfo.ShouldDisplaySurname)
+    local consts = Constants and Constants.CharacterNameSeparatorConsts
+    out("separators: surname=%s realm=%s", raw(consts and consts.CHARACTERNAME_SURNAME_SEPARATOR),
+        raw(consts and consts.CHARACTERNAME_REALMNAME_SEPARATOR))
+    out("we call ourselves: %s", raw(LIB.Me()))
+
+    -- The server's own spelling of us, straight from the roster rows rather than our parsed copy.
+    out("--- what the server calls us ---")
+    local first = tostring((UnitNameUnmodified or UnitName)("player") or ""):match("^%S+") or ""
+    local shown, members = 0, (GetNumGuildMembers and GetNumGuildMembers()) or 0
+    if GetGuildRosterInfo and members > 0 then
+        for i = 1, members do
+            local ok, full = pcall(GetGuildRosterInfo, i)
+            if ok and type(full) == "string" and first ~= "" and full:find(first, 1, true) then
+                shown = shown + 1
+                -- Print the row exactly as the server sent it AND what we make of it: a row without a
+                -- realm is normal, and comparing the raw form against our key would only look wrong.
+                local norm = LIB.FullName(full)
+                out("roster row %d: raw=%s -> %s%s", i, raw(full), norm,
+                    norm == LIB.Me() and " (matches what we call ourselves)"
+                    or " |cffff4040(DIFFERENT from what we call ourselves)|r")
+                if shown >= 3 then break end
+            end
         end
     end
-    if hits == 0 then out("no roster entry contains %q yet - the roster may not have arrived", first) end
+    if shown == 0 then
+        if members == 0 then
+            out("no guild roster to compare against (no guild, or it hasn't arrived yet)")
+        else
+            out("none of the %d roster rows contains %q", members, first)
+        end
+    end
 end
 
 --- Name for display: drops our own realm, and the surname when the player hides it.

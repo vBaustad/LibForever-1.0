@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- /yippyapp debug now prints every source the client has for your own name side by side, raw, with nil
+  and an empty value told apart, next to the spelling the guild roster uses. One run of it says which
+  part of the client actually knows your surname.
+- Names: which of the two values UnitName returns is a realm is now decided by looking at the value -
+  your own realm is a realm however it is spelled - instead of trusting a setting to say what it means.
 - Characters with a surname were only half recognised. WoW: Forever gives the surname as the second
   value from UnitName - the same slot that holds the realm when surnames are off - so anything built
   from the first value alone called "Lorr Den" just "Lorr". That is why your own messages could come
