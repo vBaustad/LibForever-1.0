@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 16
+local MAJOR, MINOR = "LibForever-1.0", 17
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -125,9 +125,19 @@ local function Separator(which, fallback)
     return type(v) == "string" and v or fallback
 end
 
--- The unit's real realm, straight from its GUID (GetPlayerInfoByGUID returns realmName). This is the
--- fact that settles "surname or another realm" for a second value that isn't our own realm: on paper
--- the two are the same thing, just a second string. It may answer nothing at all (the API is
+-- Is this unit on our own realm? The client asks exactly this question in the same place it decides
+-- whether to join a name with the surname separator or the realm dash
+-- (Blizzard_UnitPopup/Mainline/UnitPopupUtils.lua:130), so it is the right instrument and the cheapest:
+-- no GUID needed. It is nilable - nil means the client won't say - and then we ask the GUID instead.
+local function SameRealmUnit(unit)
+    if not UnitRealmRelationship then return nil end
+    local ok, rel = pcall(UnitRealmRelationship, unit)
+    if not ok or type(rel) ~= "number" then return nil end
+    return rel == (LE_REALM_RELATION_SAME or 1)
+end
+
+-- The unit's real realm, straight from its GUID (GetPlayerInfoByGUID returns realmName). The backup
+-- for when UnitRealmRelationship won't say. It may answer nothing at all (the API is
 -- MayReturnNothing, and a GUID isn't always there yet), and then we fall back on the setting.
 local function RealmFromGUID(unit)
     if not (UnitGUID and GetPlayerInfoByGUID) then return nil end
@@ -156,8 +166,17 @@ local function NameParts(unit)
     if flat == ours or flat == LIB.NormalizeRealm(GetRealmName and GetRealmName() or "") then
         return name, nil, second          -- a realm: our own
     end
-    -- Not our realm, so it is either another realm or a surname, and those look identical as text.
-    -- Ask the GUID, which knows the unit's actual realm, before falling back on a setting.
+    -- Not our realm, so it is either another realm or a surname. As TEXT the two are the same thing -
+    -- a second string that isn't our realm - so no test on the value alone can tell them apart. We ask
+    -- the client two questions of fact before we let any setting decide, and accept that a unit the
+    -- client won't answer for lands on the setting's guess: on a client with surnames enabled that
+    -- reads a cross-realm group member as having a surname ("Farmer BleedingHollow-OurRealm"). That is
+    -- the known limit of this function. It has no practical bite on Forever's megaservers, where a
+    -- guild and a group sit inside one realm set, and if it ever does, the fix is another question of
+    -- fact rather than a better guess.
+    local same = SameRealmUnit(unit)
+    if same == true then return name, second, nil end    -- our realm, so the second value is a surname
+    if same == false then return name, nil, second end   -- another realm
     local actual = RealmFromGUID(unit)
     if actual then
         if LIB.NormalizeRealm(actual) == flat then return name, nil, second end  -- another realm

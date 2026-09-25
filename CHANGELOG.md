@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Names: when the client's second value is neither our realm nor obviously a surname, the unit's GUID
-  now settles it - it knows which realm the player is actually on - instead of a setting deciding.
-  Without that, a group member from another realm was read as having a surname.
+- Names: when the client's second value is neither our realm nor obviously a surname, the client's own
+  realm check settles it (UnitRealmRelationship, with the unit's GUID as backup) instead of a setting
+  deciding. Without that, a group member from another realm was read as having a surname.
 - /yippyapp debug now prints every source the client has for your own name side by side, raw, with nil
   and an empty value told apart, next to the spelling the guild roster uses. One run of it says which
   part of the client actually knows your surname.
