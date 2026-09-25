@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Characters with a surname were only half recognised. WoW: Forever gives the surname as the second
+  value from UnitName - the same slot that holds the realm when surnames are off - so anything built
+  from the first value alone called "Lorr Den" just "Lorr". That is why your own messages could come
+  back looking like someone else's. Names are now put together the way the client does it itself, and
+  UnitKey and Me() share one code path so they can't drift apart.
+- /yippyapp debug now prints what the client says your name is next to the spelling the guild roster
+  uses, and says plainly when the two disagree.
+- New: LIB.IsMyStoredName(key), so an addon can recognise records it saved under the old short name
+  and merge them instead of starting over. It accepts either spelling of your own name and refuses
+  anyone else's, including a player who shares your first name.
 - The welcome window opens by itself again, once, when an addon needs setting up or an update brings
   a new message - but only on a client that keeps your settings (build 70009 and newer). On an older
   client it stays quiet, because "already seen" can't survive there and it would greet you at every

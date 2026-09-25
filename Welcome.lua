@@ -45,7 +45,7 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 20
+local VERSION = 21
 if (LIB.welcomeVersion or 0) >= VERSION then return end
 LIB.welcomeVersion = VERSION
 
@@ -1058,6 +1058,7 @@ SLASH_YIPPYAPP1 = "/yippyapp"
 SlashCmdList.YIPPYAPP = function(msg)
     -- Support-only: the launcher's state per addon, for bug reports.
     if msg and msg:lower():match("^%s*debug") then
+        if LIB.DebugIdentity then LIB.DebugIdentity() end
         if LIB.DebugLauncher then LIB.DebugLauncher() end
         if LIB.MinimapDebug then LIB.MinimapDebug() elseif LIB.DebugMinimap then LIB.DebugMinimap() end
         return

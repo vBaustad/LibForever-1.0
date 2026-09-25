@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 12
+local MAJOR, MINOR = "LibForever-1.0", 14
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -109,27 +109,102 @@ local function Secret(v)
     return (not ok) or (secret and true or false)
 end
 
+-- The second value UnitName returns is NOT always a realm. Forever has regional unique names, and
+-- then a character can carry a surname, which arrives in that same slot. The client resolves it this
+-- way itself (Blizzard_UnitPopup/Mainline/UnitPopupUtils.lua:124): for a unit, second value plus
+-- RegionalUniqueNamesEnabled() means surname, joined with the surname separator; otherwise it is a
+-- realm, joined with a dash. Code that reads only the first value sees "Lorr" for a player the server
+-- calls "Lorr Den", and then every key, comparison and whisper built from it is wrong for exactly the
+-- players who have a surname - including yourself, which is how you end up not recognising your own
+-- messages coming back. Nothing here reads the second value without deciding which one it is.
+-- (The UnitSurnameOwn CVar is a different thing: display only. The UI shortens the name itself, see
+-- Blizzard_UnitFrame/Mainline/UnitFrame.lua:155, so it never reaches what UnitName gives us.)
+local function Separator(which, fallback)
+    local consts = Constants and Constants.CharacterNameSeparatorConsts
+    local v = consts and consts[which]
+    return type(v) == "string" and v or fallback
+end
+
+-- name, surname, realm for a unit - whichever of the last two the client actually gave us, and nil
+-- for all three when we aren't allowed to know who this is. UnitNameUnmodified first, which is the
+-- client's own preference (UnitPopupShared.lua:7) and is not affected by anything that renames a unit.
+local function NameParts(unit)
+    local get = UnitNameUnmodified or UnitName
+    local name, second = get(unit)
+    if Secret(name) or Secret(second) then return nil end
+    if not name or name == "" or name == UNKNOWNOBJECT then return nil end
+    if second == "" then second = nil end
+    if second and RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled() then
+        return name, second, nil          -- a surname
+    end
+    return name, nil, second              -- a realm, or nothing
+end
+
 --- The "Name-Realm" key for a unit, in the spelling everything else here uses. Use it instead of
---- building a key out of UnitName yourself: the realm it gives you for someone from another realm is
---- the raw one, which would never match the same player heard on the addon channel, and the name can
---- be secret when the client restricts identity - in a battleground, say.
+--- building a key out of UnitName yourself: it puts the surname back on, normalises the realm (the
+--- one the client gives you is raw and would never match the same player heard on the addon channel),
+--- and it knows the name can be secret when the client restricts identity - in a battleground, say.
 --- nil means "we don't know who this is right now", never "there is nobody there": don't cache it,
 --- don't delete anything over it, just ask again later.
 function LIB.UnitKey(unit)
-    local name, realm = UnitName(unit or "player")
-    if Secret(name) or Secret(realm) then return nil end
-    if not name or name == "" or name == UNKNOWNOBJECT then return nil end
-    if realm and realm ~= "" then return name .. "-" .. LIB.NormalizeRealm(realm) end
+    local name, surname, realm = NameParts(unit or "player")
+    if not name then return nil end
+    if surname then name = name .. Separator("CHARACTERNAME_SURNAME_SEPARATOR", " ") .. surname end
+    if realm then return name .. "-" .. LIB.NormalizeRealm(realm) end
     return LIB.FullName(name)
 end
 
+--- Who I am, as "Name-Realm" with the surname included. One code path with UnitKey, so the surname
+--- and the secret check can't be right in one place and wrong in the other.
 function LIB.Me()
-    if not LIB.me then
-        local n = UnitName("player")
-        if not n or n == UNKNOWNOBJECT then return nil end
-        LIB.me = LIB.FullName(n)
-    end
+    if not LIB.me then LIB.me = LIB.UnitKey("player") end
     return LIB.me
+end
+
+--- Is this stored name the character we are playing now? It accepts the short form a key written
+--- before surnames were handled - "Duplo-Realm" for "Duplo Bonk-Realm" - and the other way round, so
+--- an addon migrating its own records can find them without inventing its own rule for it.
+--- ONLY for recognising yourself. "Duplo" and "Duplo Bonk" can be two different players, and this
+--- deliberately treats them as one, which is safe for your own saved data and wrong for anyone else's.
+function LIB.IsMyStoredName(key)
+    if type(key) ~= "string" or key == "" then return false end
+    local me = LIB.Me()
+    if not me then return false end
+    if key == me then return true end
+    local myName, myRealm = me:match("^(.*)%-([^%-]+)$")
+    local name, realm = key:match("^(.*)%-([^%-]+)$")
+    if not (myName and name) then return false end
+    if LIB.NormalizeRealm(realm) ~= LIB.NormalizeRealm(myRealm) then return false end
+    if name == myName then return true end   -- the same name, written with the raw realm spelling
+    local first, myFirst = name:match("^%S+"), myName:match("^%S+")
+    if first ~= myFirst then return false end
+    -- One of the two must be the bare first name: a real difference in surname is a different player.
+    return name == first or myName == myFirst
+end
+
+--- Support-only, from /yippyapp debug: everything the client will tell us about who we are, and the
+--- spelling the SERVER uses for the same character in the guild roster. If those two disagree, every
+--- key and self-check in the family is built on the wrong one, and this is where you see it.
+function LIB.DebugIdentity()
+    local function out(fmt, ...) print("|cffffd100YippYapp|r " .. fmt:format(...)) end
+    local n1, s1 = UnitName("player")
+    local n2, s2 = (UnitNameUnmodified or UnitName)("player")
+    local regional = RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled()
+    out("UnitName: %s / %s", tostring(n1), tostring(s1))
+    out("UnitNameUnmodified: %s / %s", tostring(n2), tostring(s2))
+    out("regional unique names: %s, so the second value is a %s", tostring(regional),
+        regional and "SURNAME" or "realm")
+    out("we call ourselves: %s", tostring(LIB.Me()))
+    local first = tostring(n2 or n1 or ""):match("^%S+")
+    local hits = 0
+    for full in pairs(LIB.roster) do
+        if first ~= "" and full:find(first, 1, true) then
+            hits = hits + 1
+            out("the guild roster spells it: %s%s", full, full == LIB.Me() and " (matches)" or
+                " |cffff4040(DIFFERENT from what we call ourselves)|r")
+        end
+    end
+    if hits == 0 then out("no roster entry contains %q yet - the roster may not have arrived", first) end
 end
 
 --- Name for display: drops our own realm, and the surname when the player hides it.
