@@ -12,7 +12,7 @@
 --   data       shared access to generated Forever data (recipes, professions, stations)
 --   store      saved-variable defaults, schema versions and ordered migrations, and whether
 --              the client loaded the saved variables at all (SavedVariablesLoaded)
-local MAJOR, MINOR = "LibForever-1.0", 17
+local MAJOR, MINOR = "LibForever-1.0", 19
 local LIB = LibStub and LibStub:NewLibrary(MAJOR, MINOR)
 if not LIB then return end
 
@@ -789,12 +789,42 @@ local function CheckSavedVariables()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Clearing up after the launcher bar and the welcome window
+-- ---------------------------------------------------------------------------
+-- Both are gone, and the keys they wrote are left in every addon's saved file. The library put them
+-- there, so the library takes them out - once, over every table it knows - rather than six addons
+-- each deciding separately, which is how one of them ends up with a migration and another with none.
+--
+-- notchHidden is NOT translated into "show me in the minimap row". They are different surfaces:
+-- somebody who tucked an icon out of a bar said nothing at all about their minimap, and guessing
+-- otherwise would turn a tidy-up into a settings change they did not ask for.
+local DEAD_KEYS = { "notch", "notchPrefs", "notchHidden", "welcomeSeen" }
+
+local function ClearDeadKeys()
+    -- Never while the client has failed to read the saved variables: the tables are empty then, and
+    -- "clearing" them would only write our emptiness over a file that still has the real thing.
+    if not LIB.SavedVariablesLoaded() then return end
+    local cleared = 0
+    for _, t in ipairs(AllSavedTables()) do
+        for _, key in ipairs(DEAD_KEYS) do
+            if t[key] ~= nil then
+                t[key] = nil
+                cleared = cleared + 1
+            end
+        end
+    end
+    if cleared > 0 then LIB.Debug("cleared %d leftover key(s) from the launcher and welcome window", cleared) end
+end
+
 if firstLoad then
     -- Two passes: the early one answers as soon as everyone has registered, so an addon asking
     -- SavedVariablesLoaded() gets the truth sooner; the late one covers a slow or late registration.
+    -- The tidy-up runs after both, so it never acts on a session that could not read its settings.
     LIB.On("PLAYER_LOGIN", function()
         C_Timer.After(2, CheckSavedVariables)
         C_Timer.After(5, CheckSavedVariables)
+        C_Timer.After(6, ClearDeadKeys)
     end)
 end
 

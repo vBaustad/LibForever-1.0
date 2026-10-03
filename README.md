@@ -20,12 +20,12 @@ the modules you use.
 |---|---|
 | `LibForever-1.0.lua` | **Core.** Events and callbacks: `On(event, fn)`, `Listen`, `Fire`, `Debounce`. Identity: `Me`, `FullName`, `ShortName`, `ColorName`, `UnitKey(unit)`, `NormalizeRealm(realm)` and `IsMyStoredName(key)` (for finding your own records saved under an older spelling) (`UnitName`'s second value is a **surname** when regional unique names are on and a realm otherwise, and the realm spelling it gives you is raw while an addon message's sender is normalised from an addon message; build keys from these). `UnitKey` returns nil while a unit's identity is secret, which means "we don't know who this is right now", not "nobody there". The guild roster, from the updates the server sends: `roster`, `IsOnline`, `IsGuildie` (roster only) and `KnownGuildie` (roster, or heard on the guild addon channel). Guild addon comms: `RegisterComm`, `Send` (needs AceComm-3.0), with `CommStats(prefix)` for a sent/received count and a per-sender budget that drops a flood before your handler sees it. Map distance in yards: `MyPosition`, `Distance`. Shared data between our addons: `ProvideData`, `GetData` (see below). Saved-variable defaults and migrations: `PrepareDB(db, defaults, migrations, version)`, and whether the client read the saved variables at all: `SavedVariablesLoaded()` plus the `SAVED_VARIABLES_EMPTY` callback, with `SavedVariablesBugPossible()` and `ClientBuild()` for whether this client can lose them in the first place. Text from other players: `Sanitize(text, maxLen)`. |
 | `Maps.lua` | Generated Forever map sizes, which `Distance` uses. |
-| `Launcher.lua` | **An optional launcher bar** at a screen edge, with one button per addon. It is off by default, and players turn it on from the YippYapp settings page. `RegisterLauncher(entry, savedTable)`, `SetLauncherHidden(id, hidden)`, `SetLauncherEnabled(on)`. `LauncherOptions(parent, id)` gives you a 300x60 block for your own settings page that links to the YippYapp page. |
+| `Launcher.lua` | **Removed.** The bar is gone; the file keeps its entry points as no-ops so an addon you haven't updated doesn't error against a newer library. |
 | `Windows.lua` | **Window handling.** `RegisterWindow(frame, savedTable, key)` makes a window toplevel and draggable and saves where it was put. The first time, it opens beside our other open windows. Escape closes one window at a time, and the close button works in combat. `RegisterPopup(frame)` gives a popup the same Escape and close handling. |
-| `Welcome.lua` | **One shared welcome window.** `RegisterWelcome(page, savedTable)` adds a tab for your addon, and `OpenWelcome(id)` or `/yippyapp` opens the window. It only opens by itself when an addon needs setup, and never in combat or in an instance. |
+| `Welcome.lua` | **The YippYapp window**: a sidebar of your addons and the settings of whichever one is picked. `OpenAddon(id)` opens an addon through the click its minimap button registered. (Still named Welcome.lua because six TOCs name it; the welcome pages themselves are gone.) |
 | `Minimap.lua` | **Minimap buttons**, through LibDataBroker-1.1 and LibDBIcon-1.0, which your addon ships. `RegisterMinimapButton(id, opts, savedTable)` and `SetMinimapButtonShown(id, shown)`. By default the YippYapp addons share one minimap button that opens a row of their buttons (`SetMinimapGrouped`). Each addon keeps its own LDB object for broker displays. |
 | `SelfTest.lua` | **`/yippyapp test`.** `RegisterSelfTest(id, fn)` adds your addon's own test (`fn() -> ok, message`); the runner also opens and closes every registered window and settings page, draws every welcome card and fires every launcher tooltip, all in `pcall`. It never runs in combat and restores anything it touched, including the welcome window's "seen" flags. |
-| `Settings.lua` | **The YippYapp settings page**, at Options > AddOns > YippYapp or `/yippyapp settings`. It has minimap grouping and the launcher, and for each addon its minimap and launcher buttons with a link to its own page. `RegisterOptionsPage(id, frame, name, height)` lists your settings page under YippYapp. `OptionsWidth(panel)` is the width your page actually has and `OnOptionsResize(panel, fn)` tells you when it changes; `OptionsMetrics()` gives the measurements our pages share. `OpenYippYappSettings()` opens the page. |
+| `Settings.lua` | **The YippYapp settings page**, at Options > AddOns > YippYapp or `/yippyapp settings`. It has minimap grouping and the launcher, and for each addon its minimap and launcher buttons with a link to its own page. `RegisterOptionsPage(id, frame, name, height)` lists your settings page under YippYapp. `OptionsWidth(panel)` is the width your page actually has and `OnOptionsResize(panel, fn)` tells you when it changes; `OptionsMetrics()` gives the measurements our pages share, and `AddHelp(panel, sections, y)` puts your addon's help text at the bottom of your page in the family's own spacing. `OpenYippYappSettings()` opens the page. |
 
 ```
 Libs\LibStub\LibStub.lua
@@ -89,6 +89,28 @@ Rules both sides follow:
 - **A provider that errors keeps the item.** The consumer calls through `pcall` and treats a throw as
   "keep it", so a broken provider can't get anything deleted - but it also can't be relied on to be there.
 - **Publish again when your data changes**, with the same name: `ProvideData` just replaces the table.
+
+## The help text on a settings page
+
+Every addon explains itself in the same few headed sections. Your addon owns the words; the library
+owns only where they sit, so six pages cannot drift into six paddings. It goes at the **bottom**, under
+your controls - somebody opening settings usually wants the switches, and the help is what they scroll
+to - and the headings stay visible, because a heading you have to click is a heading you do not read.
+
+```lua
+local y = -- wherever your controls finished, in the page's own coordinates (negative)
+y = LIB.AddHelp(panel, {
+    { "What it does",     "One button each to eat, drink and pot - always your best consumable." },
+    { "Getting started",  "Open the settings and press Create macros." },
+    { "Good to know",     "The macros update themselves as you level." },
+}, y - 24)
+-- y is now where the help ended: size your page from it, or carry on below.
+```
+
+A section with no heading is just a paragraph (`{ nil, "..." }`). The text wraps to the page's real
+width and re-wraps when the window resizes it, so you never need to know how wide the page is. Calling
+it again on the same panel replaces the text rather than drawing a second copy, so it is safe to call
+from `OnShow`, and `LIB.HelpBottom(panel)` gives the last bottom again if you need it later.
 
 ## What a click does (the family's convention)
 

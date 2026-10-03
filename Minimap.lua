@@ -25,7 +25,7 @@ local ADDON = ...
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 11
+local VERSION = 12
 if (LIB.minimapVersion or 0) >= VERSION then return end
 LIB.minimapVersion = VERSION
 
@@ -62,8 +62,12 @@ local function Members()
     return list
 end
 
+-- Grouping is simply how it works now. It used to be a switch on the shared YippYapp settings page,
+-- and when that page went with the launcher this was the only setting left on it - not enough to keep
+-- a page alive. What an addon still decides for itself is whether it appears in the row at all
+-- (SetMinimapButtonShown), which is where that choice belongs.
 function LIB.IsMinimapGrouped()
-    return shared.data.group ~= false
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -99,11 +103,9 @@ local flyout = LIB.minimapFlyout
 local function OpenEntry(id, frame, mouse)
     mouse = mouse or "LeftButton"
     if id == GROUP then
-        if mouse == "RightButton" and LIB.OpenYippYappSettings then
-            LIB.OpenYippYappSettings()
-        elseif LIB.OpenWelcome then
-            LIB.OpenWelcome()
-        end
+        -- The emblem itself: the row is already open, so both buttons lead to the settings window,
+        -- which is the only YippYapp-wide thing left to open.
+        if LIB.OpenYippYappSettings then LIB.OpenYippYappSettings() end
         return
     end
     local e = buttons[id]
@@ -347,10 +349,9 @@ function LIB.IsMinimapButtonShown(id)
     return not (b.store.minimap and b.store.minimap.hide)
 end
 
-function LIB.SetMinimapGrouped(on)
-    shared.data.group = on and true or false
-    Refresh()
-end
+--- Kept for addons published before grouping became fixed: they can still call it, and it does
+--- nothing, rather than erroring against a newer library than the one they shipped with.
+function LIB.SetMinimapGrouped() end
 
 -- Support diagnostics (a hidden command): where the shared button's place is meant to come from.
 function LIB.DebugMinimap()

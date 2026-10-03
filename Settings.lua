@@ -19,11 +19,10 @@
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
-local VERSION = 9
+local VERSION = 11
 if (LIB.settingsVersion or 0) >= VERSION then return end
 LIB.settingsVersion = VERSION
 
-local ROW_H = 28
 local COL_MINIMAP, COL_LAUNCHER = 210, 320   -- the Settings button is right-aligned instead
 
 -- ---------------------------------------------------------------------------
@@ -125,6 +124,92 @@ function LIB.OptionsMetrics()
     local copy = {}
     for k, v in pairs(METRICS) do copy[k] = v end
     return copy
+end
+
+-- ---------------------------------------------------------------------------
+-- The help text at the bottom of an addon's settings page
+-- ---------------------------------------------------------------------------
+-- Every addon explains itself in the same four-or-so headed sections. The addon owns the words; the
+-- library owns only where they sit, so six pages cannot drift into six paddings. It goes at the
+-- BOTTOM, under the controls: somebody opening settings usually wants the switches, and the help is
+-- what they scroll to. Headings stay visible rather than collapsing - a heading you have to click is
+-- a heading you do not read.
+local HELP_LEFT = 16          -- matches the headings on the shared page
+local HELP_HEADING_GAP = 5    -- a heading to its own paragraph
+local MIN_WRAP = 180          -- never wrap narrower than this, whatever the page says it is
+
+--- Put an addon's help text at the bottom of its settings page.
+---   LIB.AddHelp(panel, { { "What it does", "..." }, { "Getting started", "..." } }, y)
+--- y is where to start, in the page's own coordinates (negative, like everything else on a page);
+--- it returns the y it finished at, so the page can size itself or carry on below.
+--- The text wraps to the page's real width and re-wraps whenever the window resizes it, so no caller
+--- has to know how wide the page is. A section with no heading is just a paragraph. Calling it again
+--- on the same panel replaces the text rather than drawing a second copy, so it is safe from OnShow.
+function LIB.AddHelp(panel, sections, y)
+    if type(panel) ~= "table" or type(sections) ~= "table" then return tonumber(y) or 0 end
+    local block = panel.libForeverHelp
+    if not block then
+        block = { rows = {} }
+        panel.libForeverHelp = block
+    end
+    block.top = tonumber(y) or block.top or 0
+
+    local function Layout()
+        local m = LIB.OptionsMetrics()
+        local wrap = math.max(LIB.OptionsWidth(panel) - HELP_LEFT * 2, MIN_WRAP)
+        local at = block.top
+        for i, section in ipairs(sections) do
+            local row = block.rows[i]
+            if not row then
+                row = {
+                    heading = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal"),
+                    body = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall"),
+                }
+                row.body:SetJustifyH("LEFT")
+                row.body:SetSpacing(2)
+                block.rows[i] = row
+            end
+            local heading, body = section[1], section[2]
+            row.heading:SetText(heading or "")
+            row.heading:ClearAllPoints()
+            row.heading:SetPoint("TOPLEFT", HELP_LEFT, at)
+            row.heading:SetShown(heading ~= nil and heading ~= "")
+            if heading and heading ~= "" then
+                at = at - (row.heading:GetStringHeight() or 14) - HELP_HEADING_GAP
+            end
+            row.body:SetText(body or "")
+            row.body:SetWidth(wrap)
+            row.body:ClearAllPoints()
+            row.body:SetPoint("TOPLEFT", HELP_LEFT, at)
+            row.body:SetShown(body ~= nil and body ~= "")
+            if body and body ~= "" then
+                at = at - (row.body:GetStringHeight() or 14)
+            end
+            if i < #sections then at = at - m.gapSection end
+        end
+        -- Sections removed since the last call must not leave their old text behind.
+        for i = #sections + 1, #block.rows do
+            block.rows[i].heading:SetText("")
+            block.rows[i].heading:Hide()
+            block.rows[i].body:SetText("")
+            block.rows[i].body:Hide()
+        end
+        block.bottom = at
+        return at
+    end
+
+    block.Layout = Layout
+    if not block.hooked and LIB.OnOptionsResize then
+        block.hooked = true
+        LIB.OnOptionsResize(panel, function() if block.Layout then block.Layout() end end)
+    end
+    return Layout()
+end
+
+--- How far down an addon's help text reaches, after the last layout: for a page that sizes itself.
+function LIB.HelpBottom(panel)
+    local block = type(panel) == "table" and panel.libForeverHelp
+    return (block and block.bottom) or 0
 end
 
 -- A settings panel taller than the room it gets: put it in a scroll frame. The panel becomes the
@@ -259,249 +344,6 @@ function LIB.OptionsPanels()
     end
     table.sort(list, function(a, b) return a.name < b.name end)
     return list
-end
-
--- ---------------------------------------------------------------------------
--- The addons: everything registered with any part of the lib
--- ---------------------------------------------------------------------------
-local function FindCategory(name)
-    if not (SettingsPanel and SettingsPanel.GetAllCategories) then return nil end
-    local ok, list = pcall(SettingsPanel.GetAllCategories, SettingsPanel)
-    if not ok or type(list) ~= "table" then return nil end
-    for _, category in ipairs(list) do
-        if category.GetName and category:GetName() == name then return category end
-    end
-end
-
-local function SettingsTarget(id, label)
-    if LIB.optionsPanels[id] then return "panel" end
-    return FindCategory(id) or (label ~= id and FindCategory(label)) or nil
-end
-
-local function OpenSettingsFor(id, label)
-    local target = SettingsTarget(id, label)
-    if target == "panel" then
-        LIB.OpenAddonSettings(id)
-    elseif type(target) == "function" then
-        target()
-    elseif type(target) == "table" and target.GetID and target:GetID() then
-        if InCombatLockdown() then CombatMessage(label .. "'s settings") return end
-        Settings.OpenToCategory(target:GetID())
-    end
-end
-
-local function Addons()
-    local byId = {}
-    local function add(id) if type(id) == "string" and id:sub(1, 1) ~= "_" then byId[id] = true end end
-    for id in pairs(LIB.minimapButtons or {}) do add(id) end
-    for id in pairs(LIB.launcherEntries or {}) do add(id) end
-    for id in pairs(LIB.welcomePages or {}) do add(id) end
-    local list = {}
-    for id in pairs(byId) do
-        local mm = LIB.minimapButtons and LIB.minimapButtons[id]
-        local le = LIB.launcherEntries and LIB.launcherEntries[id]
-        local wp = LIB.welcomePages and LIB.welcomePages[id]
-        list[#list + 1] = {
-            id = id,
-            label = (le and le.label) or (mm and mm.opts and mm.opts.label) or (wp and wp.title) or id,
-            icon = (mm and mm.opts and mm.opts.icon) or (wp and wp.icon),
-            lineIcon = le and le.icon,
-            minimap = mm ~= nil,
-            launcher = le ~= nil,
-        }
-    end
-    table.sort(list, function(a, b) return a.label < b.label end)
-    return list
-end
-
--- ---------------------------------------------------------------------------
--- Drawing
--- ---------------------------------------------------------------------------
-local function Check(parent, label, tip)
-    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    cb:SetSize(26, 26)
-    if label then
-        cb.label = cb:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-        cb.label:SetPoint("LEFT", cb, "RIGHT", 4, 0)
-        cb.label:SetText(label)
-    end
-    if tip then
-        cb:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            if label then GameTooltip:AddLine(label, 1, 0.82, 0.3) end
-            GameTooltip:AddLine(tip, 1, 1, 1, true)
-            GameTooltip:Show()
-        end)
-        cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    end
-    return cb
-end
-
-local function Heading(parent, text)
-    local fs = parent:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    fs:SetText(text)
-    return fs
-end
-
---- The shared YippYapp settings, built into whatever frame hosts them (our own window).
---- Returns a frame with :Refresh(); it scrolls when the host is shorter than the content.
-function LIB.BuildYippYappSettings(host)
-    local old = host.content
-    if old and old.libVersion == VERSION then return old end
-    if old then old:Hide() end
-    local scroll = host.scroll
-    if not scroll then
-        scroll = CreateFrame("ScrollFrame", nil, host, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 0, -4)
-        scroll:SetPoint("BOTTOMRIGHT", -28, 4)
-        scroll:SetScript("OnSizeChanged", function(_, w)
-            if w and w > 0 and host.content then host.content:SetWidth(w) end
-        end)
-        host.scroll = scroll
-    end
-    local c = CreateFrame("Frame", nil, scroll)
-    c.libVersion = VERSION
-    c:SetSize(math.max(scroll:GetWidth() or 0, 600), 640)
-    scroll:SetScrollChild(c)
-    host.content = c
-
-    -- The window's title bar and sidebar say where we are, so the panel starts straight in.
-    local y = -6
-    Heading(c, "Shared by all YippYapp addons"):SetPoint("TOPLEFT", 16, y)
-    y = y - 20
-    c.group = Check(c, "Group YippYapp minimap buttons",
-        "One minimap button for all YippYapp addons; click it for each addon's own button. "
-        .. "Off: every addon gets its own minimap button.")
-    c.group:SetPoint("TOPLEFT", 12, y)
-    c.group:SetScript("OnClick", function(self)
-        if LIB.SetMinimapGrouped then LIB.SetMinimapGrouped(self:GetChecked()) end
-        c:Refresh()
-    end)
-    y = y - 26
-    c.launcher = Check(c, "Show the YippYapp launcher", LIB.launcherPreviewText)
-    c.launcher:SetPoint("TOPLEFT", 12, y)
-    c.launcher:SetScript("OnClick", function(self)
-        if LIB.SetLauncherEnabled then LIB.SetLauncherEnabled(self:GetChecked()) end
-        c:Refresh()
-    end)
-    y = y - 28
-
-    -- Launcher off: what it looks like. On: its style and a reset.
-    c.preview = CreateFrame("Frame", nil, c)
-    c.preview:SetPoint("TOPLEFT", 42, y)
-    c.preview:SetSize(240, 45)
-    local pic = c.preview:CreateTexture(nil, "ARTWORK")
-    pic:SetAllPoints()
-    if LIB.mediaPath then pic:SetTexture(LIB.mediaPath .. "launcher-preview") end
-    pic:SetTexCoord(0, 0.9375, 0, 0.7031)
-    local caption = c.preview:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-    caption:SetPoint("LEFT", c.preview, "RIGHT", 12, 0)
-    caption:SetWidth(300)
-    caption:SetJustifyH("LEFT")
-    caption:SetText(LIB.launcherPreviewText or "")
-    c.collapse = Check(c, "Collapse until hovered", "The bar shrinks to three dots and opens when the mouse is over it.")
-    c.collapse:SetPoint("TOPLEFT", 36, y)
-    c.collapse:SetScript("OnClick", function(self)
-        if LIB.SetLauncherStyle then LIB.SetLauncherStyle(self:GetChecked() and "collapse" or "grow") end
-    end)
-    c.reset = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
-    c.reset:SetSize(130, 22)
-    c.reset:SetPoint("TOPLEFT", 240, y - 2)
-    c.reset:SetText("Reset position")
-    c.reset:SetScript("OnClick", function() if LIB.ResetLauncherPosition then LIB.ResetLauncherPosition() end end)
-    y = y - 54
-
-    -- One row per addon
-    Heading(c, "Your YippYapp addons"):SetPoint("TOPLEFT", 16, y)
-    local function col(text, x)
-        local fs = c:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
-        fs:SetPoint("TOPLEFT", x, y - 2)
-        fs:SetText(text)
-    end
-    col("Minimap button", COL_MINIMAP)
-    col("Launcher button", COL_LAUNCHER)
-    y = y - 20
-    c.rowsTop = y
-    c.rows = {}
-    c.list = CreateFrame("Frame", nil, c)
-    c.list:SetPoint("TOPLEFT", 0, y)
-    c.list:SetPoint("RIGHT", c, "RIGHT", -8, 0)
-    c.list:SetHeight(ROW_H)
-
-    function c:Row(i)
-        local r = self.rows[i]
-        if r then return r end
-        r = CreateFrame("Frame", nil, self.list)
-        r:SetHeight(ROW_H)
-        r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
-        r:SetPoint("RIGHT", self.list, "RIGHT", 0, 0)
-        r.icon = r:CreateTexture(nil, "ARTWORK")
-        r.icon:SetSize(22, 22)
-        r.icon:SetPoint("LEFT", 16, 0)
-        r.name = r:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-        r.name:SetPoint("LEFT", r.icon, "RIGHT", 8, 0)
-        r.name:SetWidth(COL_MINIMAP - 50)
-        r.name:SetJustifyH("LEFT")
-        r.minimap = Check(r)
-        r.minimap:SetPoint("LEFT", COL_MINIMAP + 22, 0)
-        r.minimap:SetScript("OnClick", function(cb)
-            if LIB.SetMinimapButtonShown then LIB.SetMinimapButtonShown(r.id, cb:GetChecked()) end
-        end)
-        r.launcher = Check(r)
-        r.launcher:SetPoint("LEFT", COL_LAUNCHER + 26, 0)
-        r.launcher:SetScript("OnClick", function(cb)
-            if LIB.SetLauncherHidden then LIB.SetLauncherHidden(r.id, not cb:GetChecked()) end
-        end)
-        r.settings = CreateFrame("Button", nil, r, "UIPanelButtonTemplate")
-        r.settings:SetSize(110, 22)
-        r.settings:SetPoint("RIGHT", -8, 0)
-        r.settings:SetText("Settings...")
-        r.settings:SetScript("OnClick", function() OpenSettingsFor(r.id, r.label) end)
-        self.rows[i] = r
-        return r
-    end
-
-    function c:Refresh()
-        self.group:SetShown(LIB.SetMinimapGrouped ~= nil)
-        self.group.label:SetShown(LIB.SetMinimapGrouped ~= nil)
-        self.group:SetChecked(LIB.IsMinimapGrouped and LIB.IsMinimapGrouped() or false)
-        local on = LIB.IsLauncherEnabled and LIB.IsLauncherEnabled() or false
-        self.launcher:SetChecked(on)
-        self.preview:SetShown(not on)
-        self.collapse:SetShown(on); self.collapse.label:SetShown(on)
-        self.reset:SetShown(on)
-        self.collapse:SetChecked(LIB.GetLauncherStyle and LIB.GetLauncherStyle() == "collapse")
-
-        local list = Addons()
-        for _, r in ipairs(self.rows) do r:Hide() end
-        for i, a in ipairs(list) do
-            local r = self:Row(i)
-            r.id, r.label = a.id, a.label
-            if a.icon then
-                r.icon:SetTexture(a.icon)
-                r.icon:SetVertexColor(1, 1, 1, 1)
-            else
-                r.icon:SetTexture(a.lineIcon or "Interface\\Icons\\INV_Misc_QuestionMark")
-                r.icon:SetVertexColor(0.92, 0.88, 0.80, 0.92)
-            end
-            r.name:SetText(a.label)
-            r.minimap:SetShown(a.minimap)
-            r.minimap:SetChecked(a.minimap and LIB.IsMinimapButtonShown(a.id) or false)
-            r.launcher:SetShown(a.launcher)
-            r.launcher:SetChecked(a.launcher and not LIB.IsLauncherHidden(a.id) or false)
-            -- Launcher off: the per-addon choice still counts, but shows it only matters once it is on.
-            r.launcher:SetAlpha(on and 1 or 0.5)
-            r.settings:SetShown(SettingsTarget(a.id, a.label) ~= nil)
-            r:Show()
-        end
-        self.list:SetHeight(math.max(1, #list) * ROW_H)
-        -- As tall as the content: measured from the last row, once it has been laid out.
-        C_Timer.After(0, function()
-            local top, bottom = self:GetTop(), self.list:GetBottom()
-            if top and bottom then self:SetHeight(top - bottom + 16) end
-        end)
-    end
-    return c
 end
 
 -- Blizzard's page only holds the button; our window draws the settings themselves.

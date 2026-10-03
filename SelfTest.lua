@@ -11,8 +11,7 @@
 --
 -- Everything runs inside pcall, so a broken test is a reported failure and never a broken client.
 -- It refuses to run in combat, and it puts back what it touched: a window that was closed ends up
--- closed, and the "seen" flags the welcome window writes when it closes are restored, so running the
--- test never changes what the player would see next time.
+-- closed, and a window that was open stays open, so running the test changes nothing a player set.
 local LIB = LibStub and LibStub("LibForever-1.0", true)
 if not LIB then return end
 
@@ -38,9 +37,7 @@ end
 local function Addons()
     local ids = {}
     local function add(t) for id in pairs(t or {}) do if type(id) == "string" then ids[id] = true end end end
-    add(LIB.launcherEntries)
     add(LIB.minimapButtons)
-    add(LIB.welcomePages)
     add(LIB.optionsPanels)
     add(tests)
     local list = {}
@@ -55,33 +52,17 @@ end
 -- Leaving everything as we found it
 -- ---------------------------------------------------------------------------
 local function Snapshot()
-    local snap = { seen = {}, windows = {}, noticeMarked = LIB.welcomeNoticeMarked }
-    for _, p in pairs(LIB.welcomePages or {}) do
-        if p.store then
-            local seen = p.store.welcomeSeen
-            snap.seen[#snap.seen + 1] = {
-                store = p.store,
-                seen = type(seen) == "table" and CopyTable(seen) or seen,
-                notice = p.store.welcomeNotice,
-            }
-        end
-    end
+    local snap = { windows = {} }
     for f in pairs(LIB.windows or {}) do snap.windows[f] = f:IsShown() end
     snap.welcomeShown = LIB.welcomeFrame and LIB.welcomeFrame:IsShown() or false
     return snap
 end
 
 local function Restore(snap)
-    -- Close the welcome window FIRST: closing it is what writes the "seen" flags, so putting them
-    -- back before that would only see them written again.
+    -- The settings window goes back to open or closed as we found it.
     if LIB.welcomeFrame and LIB.welcomeFrame:IsShown() ~= snap.welcomeShown then
         LIB.welcomeFrame:SetShown(snap.welcomeShown)
     end
-    for _, row in ipairs(snap.seen) do
-        row.store.welcomeSeen = row.seen
-        row.store.welcomeNotice = row.notice
-    end
-    LIB.welcomeNoticeMarked = snap.noticeMarked
     for f, shown in pairs(snap.windows) do
         if f:IsShown() ~= shown then pcall(f.SetShown, f, shown) end
     end
@@ -110,46 +91,6 @@ local function CheckSettings(found)
         if LIB.optionsPanels and LIB.optionsPanels[id] and LIB.OpenAddonSettings then
             Try(found, id, "settings page", LIB.OpenAddonSettings, id)
         end
-    end
-end
-
--- The home page draws a card for every registered welcome page.
-local function CheckCards(found, other)
-    if not LIB.OpenWelcome then return end
-    local ok, err = pcall(LIB.OpenWelcome)
-    if not ok then
-        other[#other + 1] = ("welcome window: %s"):format(tostring(err))
-        return
-    end
-    local win = LIB.welcomeFrame
-    for _, card in ipairs((win and win.cards) or {}) do
-        if card:IsShown() and card.id then
-            if not (card.button and card.button:IsShown()) then
-                Fail(found, card.id, "card", "its button was not drawn")
-            end
-        end
-    end
-end
-
--- Each addon's own page in the window, which is where its build function runs. The window catches a
--- build that throws and draws a placeholder instead, so ask it afterwards whether that happened.
-local function CheckWelcomePages(found)
-    if not LIB.OpenWelcome then return end
-    for id, p in pairs(LIB.welcomePages or {}) do
-        Try(found, id, "welcome page", LIB.OpenWelcome, id)
-        if p.buildError then Fail(found, id, "welcome page", p.buildError) end
-    end
-end
-
--- The launcher buttons: their tooltip is the one bit of an entry that runs addon code on hover.
-local function CheckLauncherTooltips(found)
-    for id, e in pairs(LIB.launcherEntries or {}) do
-        local b = e.button
-        if b then
-            Try(found, id, "launcher tooltip", b:GetScript("OnEnter"), b)
-            Try(found, id, "launcher tooltip", b:GetScript("OnLeave"), b)
-        end
-        if e.status then Try(found, id, "launcher status", e.status) end
     end
 end
 
@@ -201,9 +142,6 @@ function LIB.RunSelfTests()
 
     CheckWindows(other)
     CheckSettings(found)
-    CheckWelcomePages(found)
-    CheckCards(found, other)
-    CheckLauncherTooltips(found)
     Restore(snap)
 
     local passed, failed, untested = 0, 0, 0

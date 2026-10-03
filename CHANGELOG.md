@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Fixed before anyone else saw it: removing the welcome window took a scroll helper with it that the
+  settings window still used, so opening the window wrote an error to the chat frame.
+- The welcome window is gone - the home page with its cards, every addon's page in it, and the beta
+  banner. Each addon's own explanation moved onto its settings page, which is where you go looking
+  for it. What is left is one window: a list of your YippYapp addons and the settings of whichever
+  one you pick.
+- The launcher bar is gone, and with it the shared YippYapp settings page, which had nothing left on
+  it. The YippYapp minimap button is simply how it works now; each addon decides whether it appears
+  in the row, on its own settings page.
+- The settings the launcher and the welcome window saved are cleared out of every addon's file, once,
+  by the library that put them there. Hiding an addon from the old bar is NOT read as hiding it from
+  the minimap: different things, and nobody asked for the second.
+- Old versions of our addons keep working. Everything they call that has been removed now quietly
+  does nothing instead of erroring, because the newest copy of the library serves every addon you
+  have installed - including the ones you have not updated yet.
+- Fixed: on the YippYapp settings page the per-addon "Settings..." buttons were cut off at the right
+  edge. The page's content was built at a fixed 600 wide inside a window that gives it 544, so
+  everything right-aligned sat past the visible edge. It now takes the width it is actually given.
+- New: LIB.AddHelp(panel, sections, y) puts an addon's help text at the bottom of its own settings
+  page, wrapped to the real page width and re-wrapped when the window resizes, so every addon's help
+  reads the same way instead of six pages inventing six layouts.
+- The footer's "Buy me a coffee" is now a line you can read rather than a small icon, and the
+  "Psst - you have all 6 YippYapp addons" line is gone.
+
+## 1.0.6
+
 - Names: when the client's second value is neither our realm nor obviously a surname, the client's own
   realm check settles it (UnitRealmRelationship, with the unit's GUID as backup) instead of a setting
   deciding. Without that, a group member from another realm was read as having a surname.
